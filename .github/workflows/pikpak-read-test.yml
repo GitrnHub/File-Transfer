@@ -1,0 +1,112 @@
+name: PikPak MCP Read Test
+run-name: PikPak MCP Read Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/pikpak-read-test.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
+      PIKPAK_MCP_URL: https://api-open.mypikpak.com/mcp
+
+    steps:
+      - name: Verify secret exists
+        shell: bash
+        run: |
+          if [ -z "$PIKPAK_PAT" ]; then
+            echo "PIKPAK_PAT secret is missing or empty."
+            exit 2
+          fi
+          echo "PIKPAK_PAT secret is present."
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install MCP client
+        shell: bash
+        run: |
+          mkdir -p /tmp/pikpak-mcp-test
+          cd /tmp/pikpak-mcp-test
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund @modelcontextprotocol/client
+
+      - name: Connect and discover read tools
+        shell: bash
+        run: |
+          cat > /tmp/pikpak-mcp-test/test.mjs <<'NODE'
+          import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+          import fs from 'node:fs';
+
+          const token = process.env.PIKPAK_PAT;
+          const url = process.env.PIKPAK_MCP_URL;
+          const authProvider = { token: async () => token };
+          const client = new Client(
+            { name: 'github-actions-pikpak-read-test', version: '1.0.0' },
+            { versionNegotiation: { mode: 'auto' } }
+          );
+          const transport = new StreamableHTTPClientTransport(new URL(url), { authProvider });
+
+          try {
+            await client.connect(transport);
+            const listed = await client.listTools();
+            const tools = listed?.tools ?? [];
+            fs.writeFileSync('/tmp/pikpak-tools.json', JSON.stringify({
+              connected: true,
+              protocolEra: client.getProtocolEra?.() ?? null,
+              serverVersion: client.getServerVersion?.() ?? null,
+              tools
+            }, null, 2));
+            console.log(`MCP connection OK; discovered ${tools.length} tool(s).`);
+          } finally {
+            try { await client.close(); } catch {}
+          }
+          NODE
+          cd /tmp/pikpak-mcp-test
+          node test.mjs
+
+      - name: Encrypt discovery result
+        shell: bash
+        run: |
+          cat > /tmp/pikpak-public.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtVS73j/kKyFz2E1ujGks
+          1ZbIt8VoePVux6YmqsteTJyK61e1E3yxkTtpcys0L1k5nEv46SJblgscVRDW8OOn
+          32/qSQsaS+59XJI3+g070J7WkUUQvWVhZZqaa0wSzpOjOe3/7u6ddsgIo5OnPw9F
+          fDIU7gHOpdEQgJ5w2NgOZPiw0dP1XoGPJ7nhxE4KSOGZPDfkG16l4k3QHsFjxu+d
+          9SrQFRtp5MqlVKK0h0tT6IZo4UIko9SLO7t6QgtvpJPBt0ANy14C0Dsr4oVC3Tmd
+          rnLQTR3tWcTUA8BSM/kaVXumDHbKFlnNAhnSa4i5ineZsJsJqjkaPiJsrg4t25D9
+          4QIDAQAB
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p encrypted-result
+          openssl rand -hex 32 > /tmp/pikpak-key.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in /tmp/pikpak-tools.json \
+            -out encrypted-result/pikpak-tools.enc \
+            -pass file:/tmp/pikpak-key.txt
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/pikpak-public.pem \
+            -in /tmp/pikpak-key.txt \
+            -out encrypted-result/key.enc \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          rm -f /tmp/pikpak-tools.json /tmp/pikpak-key.txt
+
+      - name: Upload encrypted result
+        uses: actions/upload-artifact@v4
+        with:
+          name: pikpak-mcp-read-test-${{ github.run_id }}
+          path: encrypted-result/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
