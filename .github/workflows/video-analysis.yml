@@ -1,0 +1,124 @@
+name: Video Transfer Analysis
+run-name: Video Analysis ${{ github.event.issue.number || 'manual' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Public HTTP/HTTPS video URL
+        required: true
+        type: string
+      filename:
+        description: Optional filename override
+        required: false
+        default: ""
+        type: string
+      max_mb:
+        description: Maximum source size in MiB
+        required: false
+        default: "450"
+        type: string
+      whisper_model:
+        description: faster-whisper model (tiny/base/small/medium)
+        required: false
+        default: "small"
+        type: string
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: video-transfer-analysis
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
+       github.event.issue.user.login == github.repository_owner &&
+       startsWith(github.event.issue.title, '[video]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout bridge code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download source video
+        id: fetch
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          INPUT_URL: ${{ inputs.url || '' }}
+          INPUT_FILENAME: ${{ inputs.filename || '' }}
+          INPUT_MAX_MB: ${{ inputs.max_mb || '450' }}
+          INPUT_EXPECTED_SHA256: ""
+        run: python3 scripts/fetch_file.py
+
+      - name: Ensure FFmpeg
+        if: steps.fetch.outcome == 'success'
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Install analysis dependencies
+        if: steps.fetch.outcome == 'success'
+        run: python3 -m pip install --disable-pip-version-check "faster-whisper>=1.0,<2" "Pillow>=10,<12"
+
+      - name: Extract frames and transcribe audio
+        id: video
+        if: steps.fetch.outcome == 'success'
+        env:
+          WHISPER_MODEL: ${{ inputs.whisper_model || 'small' }}
+        run: python3 scripts/analyze_video.py
+
+      - name: Upload processed analysis
+        id: upload
+        if: steps.video.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-analysis-${{ github.event.issue.number || github.run_id }}
+          path: analysis/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload diagnostics when processing fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-analysis-error-${{ github.event.issue.number || github.run_id }}
+          path: |
+            diagnostics/
+            analysis/
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+      - name: Post machine-readable result
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ANALYSIS_OUTCOME: ${{ steps.video.outcome }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_NAME: video-analysis-${{ github.event.issue.number }}
+          SOURCE_FILENAME: ${{ steps.fetch.outputs.filename }}
+          SOURCE_SIZE: ${{ steps.fetch.outputs.size_bytes }}
+          SOURCE_SHA256: ${{ steps.fetch.outputs.sha256 }}
+          DURATION_SECONDS: ${{ steps.video.outputs.duration_seconds }}
+          UNIFORM_FRAMES: ${{ steps.video.outputs.uniform_frames }}
+          SCENE_FRAMES: ${{ steps.video.outputs.scene_frames }}
+          TRANSCRIPT_STATUS: ${{ steps.video.outputs.transcript_status }}
+          TRANSCRIPT_LANGUAGE: ${{ steps.video.outputs.language }}
+          ERROR_TEXT: ${{ steps.fetch.outputs.error }}
+        run: python3 scripts/comment_video_result.py
