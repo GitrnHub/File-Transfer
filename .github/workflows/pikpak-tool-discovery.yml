@@ -1,0 +1,46 @@
+name: PikPak Tool Discovery
+run-name: PikPak Tool Discovery
+
+on:
+  push:
+    paths:
+      - .github/workflows/pikpak-tool-discovery.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
+      PIKPAK_MCP_URL: https://api-open.mypikpak.com/mcp
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Discover tool schemas
+        shell: bash
+        run: |
+          mkdir -p /tmp/pikpak-discovery
+          cd /tmp/pikpak-discovery
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund @modelcontextprotocol/client >/dev/null
+          cat > discover.mjs <<'NODE'
+          import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+          const token = process.env.PIKPAK_PAT;
+          if (!token) throw new Error('PIKPAK_PAT is missing');
+          const client = new Client({name:'github-actions-pikpak-tool-discovery',version:'1.0.0'},{versionNegotiation:{mode:'auto'}});
+          const transport = new StreamableHTTPClientTransport(new URL(process.env.PIKPAK_MCP_URL), {authProvider:{token:async()=>token}});
+          try {
+            await client.connect(transport);
+            const listed = await client.listTools();
+            for (const t of (listed.tools ?? [])) {
+              console.log('\n=== TOOL ===');
+              console.log(JSON.stringify({name:t.name, description:t.description, inputSchema:t.inputSchema}, null, 2));
+            }
+          } finally { try { await client.close(); } catch {} }
+          NODE
+          node discover.mjs
