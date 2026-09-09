@@ -190,7 +190,7 @@ transcript.txt
 transcript.json
 ```
 
-If there is no audio stream, `transcript.txt` records that fact. If transcription fails, frame extraction can still be diagnostically useful and the error is recorded.
+If there is no audio stream, `transcript.txt` records that fact. A speech-recognition error is recorded in the analysis output; visual frame extraction is still the primary evidence path for teardown/hardware inspection.
 
 ### Video-analysis performance note
 
