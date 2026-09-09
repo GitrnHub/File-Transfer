@@ -1,0 +1,11 @@
+# Local/workflow transfer outputs
+payload/
+diagnostics/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS/editor
+.DS_Store
+Thumbs.db
