@@ -33,110 +33,31 @@ jobs:
           cat > speed10.mjs <<'NODE'
           import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
           import { performance } from 'node:perf_hooks';
-
-          const token = process.env.PIKPAK_PAT;
-          if (!token) throw new Error('PIKPAK_PAT is missing');
-          const client = new Client({ name:'github-actions-pikpak-10conn', version:'1.0.0' }, { versionNegotiation:{ mode:'auto' } });
-          const transport = new StreamableHTTPClientTransport(new URL(process.env.PIKPAK_MCP_URL), { authProvider:{ token:async()=>token } });
-
-          function decode(result) {
-            const texts=(result?.content??[]).filter(x=>x?.type==='text').map(x=>x.text).filter(Boolean);
-            if(!texts.length) return {};
-            const s=texts.join('\n');
-            try{return JSON.parse(s)}catch{return {raw_text:s}}
-          }
-          function findUrl(v){
-            if(!v) return null;
-            if(typeof v==='string') return /^https?:\/\//i.test(v)?v:null;
-            if(Array.isArray(v)){for(const x of v){const u=findUrl(x);if(u)return u}return null}
-            if(typeof v==='object'){
-              for(const k of ['download_url','downloadUrl','url']) if(typeof v[k]==='string'&&/^https?:\/\//i.test(v[k])) return v[k];
-              for(const x of Object.values(v)){const u=findUrl(x);if(u)return u}
-            }
-            return null;
-          }
-          async function listFolder(parentId){
-            const out=[]; let pageToken='';
-            for(let page=0;page<100;page++){
-              const args={parent_id:parentId,limit:100}; if(pageToken)args.token=pageToken;
-              const d=decode(await client.callTool({name:'ls',arguments:args}));
-              const files=Array.isArray(d.files)?d.files:[]; out.push(...files);
-              pageToken=d.next_page_token||d.nextPageToken||''; if(!pageToken||!files.length)break;
-            }
-            return out;
-          }
-          const matches=[]; let scanned=0;
-          async function walk(parentId,depth=0){
-            if(depth>10||scanned>10000)return;
-            for(const item of await listFolder(parentId)){
-              scanned++;
-              if(item.kind==='file'){
-                const n=String(item.name||'').toLowerCase();
-                if(n.includes('mayday')&&n.endsWith('.mkv'))matches.push(item);
-              }else if(item.kind==='folder') await walk(item.id,depth+1);
-            }
-          }
-
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          const token=process.env.PIKPAK_PAT;
+          if(!token) throw new Error('PIKPAK_PAT is missing');
+          const client=new Client({name:'github-actions-pikpak-10conn',version:'1.1.0'},{versionNegotiation:{mode:'auto'}});
+          const transport=new StreamableHTTPClientTransport(new URL(process.env.PIKPAK_MCP_URL),{authProvider:{token:async()=>token}});
+          function decode(result){const t=(result?.content??[]).filter(x=>x?.type==='text').map(x=>x.text).filter(Boolean);if(!t.length)return{};const s=t.join('\n');try{return JSON.parse(s)}catch{return{raw_text:s}}}
+          function findUrl(v){if(!v)return null;if(typeof v==='string')return /^https?:\/\//i.test(v)?v:null;if(Array.isArray(v)){for(const x of v){const u=findUrl(x);if(u)return u}return null}if(typeof v==='object'){for(const k of ['download_url','downloadUrl','url'])if(typeof v[k]==='string'&&/^https?:\/\//i.test(v[k]))return v[k];for(const x of Object.values(v)){const u=findUrl(x);if(u)return u}}return null}
+          async function listFolder(parentId){const out=[];let pageToken='';for(let p=0;p<100;p++){const a={parent_id:parentId,limit:100};if(pageToken)a.token=pageToken;const d=decode(await client.callTool({name:'ls',arguments:a}));const f=Array.isArray(d.files)?d.files:[];out.push(...f);pageToken=d.next_page_token||d.nextPageToken||'';if(!pageToken||!f.length)break}return out}
+          const matches=[];let scanned=0;
+          async function walk(parentId,depth=0){if(depth>10||scanned>10000)return;for(const item of await listFolder(parentId)){scanned++;if(item.kind==='file'){const n=String(item.name||'').toLowerCase();if(n.includes('mayday')&&n.endsWith('.mkv'))matches.push(item)}else if(item.kind==='folder')await walk(item.id,depth+1)}}
+          async function rangeFetch(url,start,end,i){let last=null;for(let attempt=1;attempt<=4;attempt++){try{const r=await fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0','range':`bytes=${start}-${end}`}});last=r;if(r.ok&&r.body)return{response:r,attempt};try{await r.body?.cancel()}catch{};if(![429,500,502,503,504].includes(r.status))break}catch(e){}await sleep(250*attempt+i*25)}return{response:last,attempt:4}}
           try{
-            await client.connect(transport);
-            await walk('');
-            if(!matches.length) throw new Error('No matching MKV found');
-            const target=matches[0];
-            const detail=decode(await client.callTool({name:'get',arguments:{id:target.id,url_type:'download'}}));
-            const url=findUrl(detail); if(!url) throw new Error('No download URL');
-
-            const probe=await fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0','range':'bytes=0-0'}});
-            const cr=probe.headers.get('content-range')||'';
-            try{await probe.body?.cancel()}catch{}
-            const m=cr.match(/\/(\d+)$/); const total=m?Number(m[1]):0;
-
-            const N=10, testMs=20000;
-            const chunk=total>0?Math.max(1,Math.floor(total/N)):256*1024*1024;
-            const ranges=[];
-            for(let i=0;i<N;i++){
-              const start=total>0?Math.floor(i*total/N):i*chunk;
-              const end=total>0?Math.min(total-1,Math.floor((i+1)*total/N)-1):start+chunk-1;
-              ranges.push([start,end]);
-            }
-
-            const requestStart=performance.now();
-            const responses=await Promise.all(ranges.map(([start,end])=>fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0','range':`bytes=${start}-${end}`}})));
-            const headersAt=performance.now();
-            for(const r of responses) if(!(r.ok&&r.body)) throw new Error(`HTTP failure ${r.status}`);
-            const readers=responses.map(r=>r.body.getReader());
-            const perBytes=Array(N).fill(0), firstByte=Array(N).fill(null);
-            const deadline=performance.now()+testMs;
-
-            async function pump(i){
-              const reader=readers[i];
-              try{
-                while(performance.now()<deadline){
-                  const {done,value}=await reader.read();
-                  const now=performance.now();
-                  if(done)break;
-                  if(firstByte[i]===null)firstByte[i]=now;
-                  perBytes[i]+=value.byteLength;
-                  if(now>=deadline)break;
-                }
-              }finally{try{await reader.cancel()}catch{}}
-            }
-            await Promise.all(readers.map((_,i)=>pump(i)));
-            const endAt=performance.now();
-            const totalBytes=perBytes.reduce((a,b)=>a+b,0);
-            const bodySeconds=Math.max((endAt-headersAt)/1000,0.001);
-            const endSeconds=Math.max((endAt-requestStart)/1000,0.001);
-            const mib=totalBytes/1048576;
-            const perConn=perBytes.map(b=>Number((b/1048576/bodySeconds).toFixed(2)));
-            const result={
-              runner_note:'see Azure Region above', scanned_items:scanned, match_count:matches.length,
-              file_size_bytes:total||null, connections:N, http_statuses:responses.map(r=>r.status),
-              sample_bytes:totalBytes, sample_mib:Number(mib.toFixed(2)),
-              headers_wait_ms:Number((headersAt-requestStart).toFixed(1)), body_seconds:Number(bodySeconds.toFixed(3)),
-              aggregate_mib_per_s:Number((mib/bodySeconds).toFixed(2)),
-              aggregate_mbps:Number((mib/bodySeconds*8*1048576/1000000).toFixed(2)),
-              end_to_end_mib_per_s:Number((mib/endSeconds).toFixed(2)), per_connection_mib_per_s:perConn
-            };
-            console.log('PIKPAK_10CONN_RESULT_V1 '+JSON.stringify(result));
+            await client.connect(transport);await walk('');if(!matches.length)throw new Error('No matching MKV found');
+            const target=matches[0];const detail=decode(await client.callTool({name:'get',arguments:{id:target.id,url_type:'download'}}));const url=findUrl(detail);if(!url)throw new Error('No download URL');
+            const probe=await fetch(url,{redirect:'follow',headers:{'user-agent':'Mozilla/5.0','range':'bytes=0-0'}});const cr=probe.headers.get('content-range')||'';const probeStatus=probe.status;try{await probe.body?.cancel()}catch{};const m=cr.match(/\/(\d+)$/);const total=m?Number(m[1]):0;
+            const N=10,testMs=20000;const chunk=total>0?Math.max(1,Math.floor(total/N)):64*1024*1024;const ranges=[];
+            for(let i=0;i<N;i++){const start=total>0?Math.floor(i*total/N):i*chunk;const end=total>0?Math.min(total-1,Math.floor((i+1)*total/N)-1):start+chunk-1;ranges.push([start,end])}
+            const requestStart=performance.now();const opened=await Promise.all(ranges.map(([s,e],i)=>rangeFetch(url,s,e,i)));const headersAt=performance.now();
+            const statuses=opened.map(x=>x.response?.status??0);const attempts=opened.map(x=>x.attempt);const good=opened.map((x,i)=>({x,i})).filter(v=>v.x.response?.ok&&v.x.response?.body);
+            if(!good.length)throw new Error('All 10 parallel requests failed: '+JSON.stringify(statuses));
+            const perBytes=Array(N).fill(0);const deadline=performance.now()+testMs;
+            async function pump(v){const i=v.i,reader=v.x.response.body.getReader();try{while(performance.now()<deadline){const {done,value}=await reader.read();const now=performance.now();if(done)break;perBytes[i]+=value.byteLength;if(now>=deadline)break}}finally{try{await reader.cancel()}catch{}}}
+            await Promise.all(good.map(pump));const endAt=performance.now();const totalBytes=perBytes.reduce((a,b)=>a+b,0);const bodySeconds=Math.max((endAt-headersAt)/1000,0.001);const endSeconds=Math.max((endAt-requestStart)/1000,0.001);const mib=totalBytes/1048576;
+            const result={probe_status:probeStatus,file_size_bytes:total||null,connections_requested:N,connections_active:good.length,http_statuses:statuses,attempts,sample_mib:Number(mib.toFixed(2)),body_seconds:Number(bodySeconds.toFixed(3)),aggregate_mib_per_s:Number((mib/bodySeconds).toFixed(2)),aggregate_mbps:Number((mib/bodySeconds*8*1048576/1000000).toFixed(2)),end_to_end_mib_per_s:Number((mib/endSeconds).toFixed(2)),per_connection_mib_per_s:perBytes.map(b=>Number((b/1048576/bodySeconds).toFixed(2)))};
+            console.log('PIKPAK_10CONN_RESULT_V2 '+JSON.stringify(result));
           }finally{try{await client.close()}catch{}}
           NODE
           node speed10.mjs
