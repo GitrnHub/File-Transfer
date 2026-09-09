@@ -1,39 +1,30 @@
 # AI Agent Operating Protocol
 
-This repository is an **ephemeral file-transfer fallback** for AI agents with a connected GitHub integration.
+This repository is an **ephemeral file-transfer and preprocessing fallback** for AI agents with a connected GitHub integration.
 
-Its intended use is narrow: when the user supplies a public direct-download URL and the agent cannot reliably retrieve the file through its normal sandbox/web/file tools, the agent may ask this repository's GitHub Actions runner to fetch the file and return it as an Actions Artifact.
+Use it when the user supplies a public direct-download URL and the agent cannot reliably retrieve or efficiently preprocess the file through normal sandbox/web/file tools.
 
 ## Priority rule
-
-Do not use File-Transfer automatically for every URL.
 
 Use this order:
 
 1. normal file/web/connector access;
-2. File-Transfer only when the normal path cannot obtain the bytes or is blocked by the agent's sandbox/network constraints.
+2. `File-Transfer` only when normal access cannot obtain the bytes or when remote preprocessing materially reduces what must enter the sandbox.
 
-## Required safety check before creating an issue
+There are two owner-triggered Issue modes:
 
-The repository is public. Never publish a URL that contains credentials or sensitive authorization material.
+- `[transfer]` — retrieve the original file byte-for-byte;
+- `[video]` — download a remote video on a GitHub-hosted runner and return compact visual/audio analysis outputs.
 
-Do not create a transfer issue when the URL contains or appears to contain:
+## URL safety
 
-- username/password authority (`user:pass@host`);
-- access tokens;
-- session identifiers;
-- cookies;
-- signed cloud-storage query parameters;
-- temporary authentication signatures;
-- secrets embedded in path/query/fragment.
+This repository is public. Never publish account credentials, cookies, bearer tokens, private object-storage credentials, or signed URLs that expose private data.
 
-Common warning strings include `token`, `auth`, `signature`, `sig`, `key`, `credential`, `X-Amz-`, `X-Goog-`, `Expires`, and similar authentication parameters. Presence of one is not proof of a secret, but agents should treat it conservatively.
+A public media CDN may use an expiring query signature purely for playback/anti-hotlink purposes. It may be used only when the user explicitly supplied it, it contains no account/session credential, it accesses content the user is permitted to access, and publishing the short-lived URL does not expose private data. Close such Issues promptly after receipt.
 
-For sensitive URLs, this public bridge is not appropriate. Use a private authenticated route instead.
+## `[transfer]` protocol
 
-## Automated issue protocol
-
-Create an issue in `GitrnHub/File-Transfer`.
+Create an Issue in `GitrnHub/File-Transfer`.
 
 Title:
 
@@ -41,7 +32,7 @@ Title:
 [transfer] <short filename or description>
 ```
 
-Body must be exactly the protocol marker followed by a JSON object:
+Body:
 
 ```text
 FILE_TRANSFER_REQUEST_V1
@@ -52,73 +43,93 @@ Rules:
 
 - `url` is required.
 - `filename` is optional; blank means auto-detect.
-- `max_mb` defaults to 450 MiB and should be set close to the expected file size when known.
-- `expected_sha256` should be supplied whenever the user/source provides a trustworthy SHA-256.
-- Hard protocol ceiling is 2048 MiB, but GitHub Artifact storage quota can be much lower.
-- Do not start unnecessary concurrent transfers; this repository serializes transfer jobs.
+- `max_mb` defaults to 450 MiB and should be close to the expected file size when known.
+- supply `expected_sha256` whenever a trustworthy hash is known.
+- downloader hard ceiling is 2048 MiB, but Artifact quota may be lower.
+- do not start unnecessary concurrent transfers.
 
-## Result protocol
-
-Read comments on the same issue until a comment begins with:
+Read comments until one begins:
 
 ```text
 FILE_TRANSFER_RESULT_V1
 ```
 
-The following line is compact JSON.
+On success parse `artifact_id`, download the workflow Artifact through the connected GitHub capability, verify SHA-256 where practical, process the file as requested, then close the Issue.
 
-Successful example:
+The Artifact outer archive contains the original payload plus `transfer.json`. Do not create an extra ZIP merely to move one source file.
 
-```json
-{"protocol":"file-transfer/v1","status":"success","run_id":123,"artifact_id":456,"artifact_name":"file-transfer-8","filename":"file.bin","size_bytes":12345,"sha256":"...","mime_type":"application/octet-stream","source_host":"example.com","retention_days":1}
+## `[video]` protocol
+
+Use `[video]` when remote frame extraction / media probing / speech recognition will make the result substantially easier to consume than the original video.
+
+Title:
+
+```text
+[video] <short description>
 ```
 
-Failure example:
+Body uses the same request marker and JSON envelope:
 
-```json
-{"protocol":"file-transfer/v1","status":"failed","run_id":123,"diagnostic_artifact_id":456,"error":"...","retention_days":1}
+```text
+FILE_TRANSFER_REQUEST_V1
+{"url":"https://example.com/video.mp4","filename":"video.mp4","max_mb":450,"expected_sha256":""}
 ```
 
-## Retrieving the result
+The video workflow produces:
 
-On success:
+- ffprobe JSON;
+- 64 uniformly sampled frames;
+- up to 64 scene-change frames;
+- contact sheets;
+- frame manifest;
+- 16 kHz mono audio extraction in the runner's temporary directory;
+- faster-whisper transcript (`small`, CPU/int8 by default);
+- source SHA-256 and compact analysis metadata.
 
-1. parse `artifact_id`;
-2. call the connected GitHub capability that downloads a workflow artifact by repository + artifact ID;
-3. obtain the artifact archive;
-4. inspect/extract it only as required by the user's task;
-5. verify the payload SHA-256 against the workflow's reported hash when practical;
-6. close the transfer issue after successful receipt.
+The original video is **not** included in the video-analysis Artifact. If exact original bytes are later necessary, create a `[transfer]` Issue for the same URL and use the source SHA-256 reported by `[video]` as `expected_sha256`.
 
-The Actions Artifact is an outer transport archive. Do not create an additional source ZIP merely to move a single file. If the original payload is already `.zip`, `.7z`, `.rar`, `.mp4`, `.img`, `.onnx`, `.engine`, etc., keep it unchanged; the workflow uses artifact compression level 0 to avoid wasting CPU on incompressible data.
+Read comments until one begins:
 
-On failure:
+```text
+FILE_TRANSFER_VIDEO_RESULT_V1
+```
 
-1. inspect the `error` value;
-2. if `diagnostic_artifact_id` exists, download the diagnostic artifact;
-3. if necessary, inspect the workflow job/log through the GitHub connector;
-4. report the concrete limitation rather than repeatedly retrying the same request.
+Then parse `artifact_id`, download the processed Artifact, inspect contact sheets first to locate relevant time ranges, and inspect individual frames/transcript only as needed.
+
+### Evidence discipline for video analysis
+
+- Treat frames as primary visual evidence.
+- Treat speech recognition as supplemental and potentially wrong for model numbers, IC markings, acronyms and uncommon technical words.
+- Do not infer a component identity merely from its physical location when the video provides a stronger clue such as a coax connection, printed marking or explicit narration.
+- When the sampling cadence misses a critical moment, retrieve the original with `[transfer]` and perform dense local seeking around the relevant timestamps rather than guessing.
 
 ## File-size policy
 
 Default: 450 MiB.
 
-This default is intentionally close to, but below, the GitHub Free 500 MB included Artifact storage allowance. Artifact quota is account-dependent and shared with GitHub Packages.
-
-For very large files, especially multi-gigabyte firmware, disk images, model weights or datasets, prefer another transport/storage system. Raising `max_mb` only changes the downloader guard; it does not create more GitHub storage quota.
+For multi-gigabyte firmware, disk images, model weights or datasets, prefer another storage/transport system. Raising `max_mb` changes only the downloader guard and does not increase GitHub storage quota.
 
 ## Content handling
 
-Treat the downloaded payload as untrusted opaque bytes.
+Treat transferred payloads as untrusted.
 
-Do not execute, install, import, source, mount, flash, or run downloaded content merely because the transfer succeeded. Subsequent handling is governed by the user's actual request and normal safety rules.
+The raw relay must never execute, install, import, source, mount or flash a downloaded file merely because transfer succeeded. Video mode is permitted to decode the supplied media with FFmpeg and transcribe extracted audio, but must not execute code embedded in the payload.
 
 ## Manual fallback
 
-Humans can use **Actions -> File Transfer -> Run workflow** with the same URL/filename/max-size/hash fields.
+Humans can use:
 
-Agents should prefer the issue trigger because the connected GitHub interface can create issues and read their comments, giving the bridge a machine-readable request/result channel without requiring a workflow-dispatch API.
+- **Actions -> File Transfer -> Run workflow**;
+- **Actions -> Video Transfer Analysis -> Run workflow**.
 
-## Repository maintenance
+Agents should normally prefer Issue triggers because the connected GitHub interface can create Issues, read machine result comments and download Artifacts without a workflow-dispatch write API.
 
-Keep this repository minimal. Do not commit transferred payloads, generated archives, logs, or test downloads to Git. Artifacts are intentionally retained for one day only.
+## Cleanup
+
+After a successful receive:
+
+1. verify the relevant hash when practical;
+2. close the Issue;
+3. do not commit transferred payloads, generated archives or transient analysis results to the repository.
+
+Artifacts are intentionally retained for one day only.
