@@ -1,5 +1,5 @@
-name: PikPak Read Test
-run-name: PikPak Read Test
+name: PikPak Recursive Read
+run-name: PikPak Recursive Read
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
       PIKPAK_MCP_URL: https://api-open.mypikpak.com/mcp
@@ -41,7 +41,7 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install --no-audit --no-fund @modelcontextprotocol/client
 
-      - name: Fetch PikPak root directory
+      - name: Recursively list PikPak files
         shell: bash
         run: |
           cat > /tmp/pikpak-read/read.mjs <<'NODE'
@@ -52,19 +52,74 @@ jobs:
           const url = process.env.PIKPAK_MCP_URL;
           const authProvider = { token: async () => token };
           const client = new Client(
-            { name: 'github-actions-pikpak-read', version: '1.0.0' },
+            { name: 'github-actions-pikpak-recursive-read', version: '1.0.0' },
             { versionNegotiation: { mode: 'auto' } }
           );
           const transport = new StreamableHTTPClientTransport(new URL(url), { authProvider });
 
+          const MAX_DEPTH = 8;
+          const MAX_ITEMS = 5000;
+          let total = 0;
+
+          function decode(result) {
+            const text = (result?.content ?? []).find(x => x?.type === 'text')?.text;
+            if (!text) return {};
+            try { return JSON.parse(text); }
+            catch { return { raw_text: text }; }
+          }
+
+          async function listFolder(parentId) {
+            const all = [];
+            let pageToken = '';
+            for (let page = 0; page < 100 && total < MAX_ITEMS; page++) {
+              const args = { parent_id: parentId, limit: 100 };
+              if (pageToken) args.token = pageToken;
+              const result = await client.callTool({ name: 'ls', arguments: args });
+              const data = decode(result);
+              const files = Array.isArray(data.files) ? data.files : [];
+              all.push(...files);
+              total += files.length;
+              pageToken = data.next_page_token || data.nextPageToken || '';
+              if (!pageToken || files.length === 0) break;
+            }
+            return all;
+          }
+
+          async function walk(parentId, path, depth) {
+            if (depth > MAX_DEPTH || total >= MAX_ITEMS) return [];
+            const items = await listFolder(parentId);
+            const out = [];
+            for (const item of items) {
+              const node = {
+                id: item.id,
+                name: item.name,
+                kind: item.kind,
+                size: item.size,
+                mime_type: item.mime_type,
+                file_category: item.file_category,
+                modified: item.modified,
+                hash: item.hash,
+                path: path === '/' ? `/${item.name}` : `${path}/${item.name}`
+              };
+              out.push(node);
+              if (item.kind === 'folder' && depth < MAX_DEPTH && total < MAX_ITEMS) {
+                node.children = await walk(item.id, node.path, depth + 1);
+              }
+            }
+            return out;
+          }
+
           try {
             await client.connect(transport);
-            const result = await client.callTool({
-              name: 'ls',
-              arguments: { parent_id: '', limit: 100 }
-            });
-            fs.writeFileSync('/tmp/pikpak-root.json', JSON.stringify(result, null, 2));
-            console.log('PikPak root listing fetched successfully; contents are not printed to public logs.');
+            const tree = await walk('', '/', 0);
+            fs.writeFileSync('/tmp/pikpak-tree.json', JSON.stringify({
+              generated_at: new Date().toISOString(),
+              max_depth: MAX_DEPTH,
+              max_items: MAX_ITEMS,
+              items_seen: total,
+              tree
+            }, null, 2));
+            console.log(`PikPak recursive listing fetched successfully; ${total} item(s) seen. Contents are not printed to public logs.`);
           } finally {
             try { await client.close(); } catch {}
           }
@@ -91,20 +146,20 @@ jobs:
           mkdir -p encrypted-result
           openssl rand -hex 32 > /tmp/pikpak-key.txt
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-            -in /tmp/pikpak-root.json \
-            -out encrypted-result/pikpak-root.enc \
+            -in /tmp/pikpak-tree.json \
+            -out encrypted-result/pikpak-tree.enc \
             -pass file:/tmp/pikpak-key.txt
           openssl pkeyutl -encrypt -pubin -inkey /tmp/pikpak-public.pem \
             -in /tmp/pikpak-key.txt \
             -out encrypted-result/key.enc \
             -pkeyopt rsa_padding_mode:oaep \
             -pkeyopt rsa_oaep_md:sha256
-          rm -f /tmp/pikpak-root.json /tmp/pikpak-key.txt
+          rm -f /tmp/pikpak-tree.json /tmp/pikpak-key.txt
 
       - name: Upload encrypted result
         uses: actions/upload-artifact@v4
         with:
-          name: pikpak-read-result-${{ github.run_id }}
+          name: pikpak-recursive-result-${{ github.run_id }}
           path: encrypted-result/
           if-no-files-found: error
           retention-days: 1
