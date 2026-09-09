@@ -1,0 +1,121 @@
+name: File Transfer
+run-name: File Transfer ${{ github.event.issue.number || 'manual' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Public HTTP/HTTPS direct-download URL
+        required: true
+        type: string
+      filename:
+        description: Optional output filename override
+        required: false
+        default: ""
+        type: string
+      max_mb:
+        description: Maximum file size in MiB (1-2048)
+        required: false
+        default: "450"
+        type: string
+      expected_sha256:
+        description: Optional expected SHA-256 (64 hex characters)
+        required: false
+        default: ""
+        type: string
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: file-transfer
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
+       github.event.issue.user.login == github.repository_owner &&
+       startsWith(github.event.issue.title, '[transfer]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout bridge code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate request and download opaque payload
+        id: fetch
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          INPUT_URL: ${{ inputs.url || '' }}
+          INPUT_FILENAME: ${{ inputs.filename || '' }}
+          INPUT_MAX_MB: ${{ inputs.max_mb || '450' }}
+          INPUT_EXPECTED_SHA256: ${{ inputs.expected_sha256 || '' }}
+        run: python3 scripts/fetch_file.py
+
+      - name: Upload downloaded file
+        id: upload_success
+        if: steps.fetch.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: file-transfer-${{ github.event.issue.number || github.run_id }}
+          path: payload/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload failure diagnostics
+        id: upload_diagnostic
+        if: failure() && steps.fetch.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: file-transfer-error-${{ github.event.issue.number || github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 1
+          compression-level: 0
+
+      - name: Post machine-readable result to issue
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+          SUCCESS_ARTIFACT_ID: ${{ steps.upload_success.outputs.artifact-id }}
+          SUCCESS_ARTIFACT_NAME: file-transfer-${{ github.event.issue.number }}
+          DIAGNOSTIC_ARTIFACT_ID: ${{ steps.upload_diagnostic.outputs.artifact-id }}
+          TRANSFER_FILENAME: ${{ steps.fetch.outputs.filename }}
+          TRANSFER_SIZE: ${{ steps.fetch.outputs.size_bytes }}
+          TRANSFER_SHA256: ${{ steps.fetch.outputs.sha256 }}
+          TRANSFER_MIME: ${{ steps.fetch.outputs.mime_type }}
+          TRANSFER_SOURCE_HOST: ${{ steps.fetch.outputs.source_host }}
+          TRANSFER_ERROR: ${{ steps.fetch.outputs.error }}
+        run: python3 scripts/comment_issue.py
+
+      - name: Write run summary
+        if: always()
+        env:
+          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+          ARTIFACT_ID: ${{ steps.upload_success.outputs.artifact-id }}
+          FILENAME: ${{ steps.fetch.outputs.filename }}
+          SIZE_BYTES: ${{ steps.fetch.outputs.size_bytes }}
+          SHA256: ${{ steps.fetch.outputs.sha256 }}
+          ERROR_TEXT: ${{ steps.fetch.outputs.error }}
+        run: |
+          {
+            echo "# File Transfer"
+            echo
+            echo "- Fetch outcome: \`${FETCH_OUTCOME:-unknown}\`"
+            if [ -n "${ARTIFACT_ID}" ]; then echo "- Artifact ID: \`${ARTIFACT_ID}\`"; fi
+            if [ -n "${FILENAME}" ]; then echo "- Filename: \`${FILENAME}\`"; fi
+            if [ -n "${SIZE_BYTES}" ]; then echo "- Size: \`${SIZE_BYTES}\` bytes"; fi
+            if [ -n "${SHA256}" ]; then echo "- SHA-256: \`${SHA256}\`"; fi
+            if [ -n "${ERROR_TEXT}" ]; then echo "- Error: \`${ERROR_TEXT}\`"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
