@@ -1,5 +1,5 @@
-name: PikPak MCP Read Test
-run-name: PikPak MCP Read Test
+name: PikPak Read Test
+run-name: PikPak Read Test
 
 on:
   workflow_dispatch:
@@ -36,15 +36,15 @@ jobs:
       - name: Install MCP client
         shell: bash
         run: |
-          mkdir -p /tmp/pikpak-mcp-test
-          cd /tmp/pikpak-mcp-test
+          mkdir -p /tmp/pikpak-read
+          cd /tmp/pikpak-read
           npm init -y >/dev/null 2>&1
           npm install --no-audit --no-fund @modelcontextprotocol/client
 
-      - name: Connect and discover read tools
+      - name: Fetch PikPak root directory
         shell: bash
         run: |
-          cat > /tmp/pikpak-mcp-test/test.mjs <<'NODE'
+          cat > /tmp/pikpak-read/read.mjs <<'NODE'
           import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
           import fs from 'node:fs';
 
@@ -52,30 +52,27 @@ jobs:
           const url = process.env.PIKPAK_MCP_URL;
           const authProvider = { token: async () => token };
           const client = new Client(
-            { name: 'github-actions-pikpak-read-test', version: '1.0.0' },
+            { name: 'github-actions-pikpak-read', version: '1.0.0' },
             { versionNegotiation: { mode: 'auto' } }
           );
           const transport = new StreamableHTTPClientTransport(new URL(url), { authProvider });
 
           try {
             await client.connect(transport);
-            const listed = await client.listTools();
-            const tools = listed?.tools ?? [];
-            fs.writeFileSync('/tmp/pikpak-tools.json', JSON.stringify({
-              connected: true,
-              protocolEra: client.getProtocolEra?.() ?? null,
-              serverVersion: client.getServerVersion?.() ?? null,
-              tools
-            }, null, 2));
-            console.log(`MCP connection OK; discovered ${tools.length} tool(s).`);
+            const result = await client.callTool({
+              name: 'ls',
+              arguments: { parent_id: '', limit: 100 }
+            });
+            fs.writeFileSync('/tmp/pikpak-root.json', JSON.stringify(result, null, 2));
+            console.log('PikPak root listing fetched successfully; contents are not printed to public logs.');
           } finally {
             try { await client.close(); } catch {}
           }
           NODE
-          cd /tmp/pikpak-mcp-test
-          node test.mjs
+          cd /tmp/pikpak-read
+          node read.mjs
 
-      - name: Encrypt discovery result
+      - name: Encrypt private result
         shell: bash
         run: |
           cat > /tmp/pikpak-public.pem <<'PEM'
@@ -94,20 +91,20 @@ jobs:
           mkdir -p encrypted-result
           openssl rand -hex 32 > /tmp/pikpak-key.txt
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-            -in /tmp/pikpak-tools.json \
-            -out encrypted-result/pikpak-tools.enc \
+            -in /tmp/pikpak-root.json \
+            -out encrypted-result/pikpak-root.enc \
             -pass file:/tmp/pikpak-key.txt
           openssl pkeyutl -encrypt -pubin -inkey /tmp/pikpak-public.pem \
             -in /tmp/pikpak-key.txt \
             -out encrypted-result/key.enc \
             -pkeyopt rsa_padding_mode:oaep \
             -pkeyopt rsa_oaep_md:sha256
-          rm -f /tmp/pikpak-tools.json /tmp/pikpak-key.txt
+          rm -f /tmp/pikpak-root.json /tmp/pikpak-key.txt
 
       - name: Upload encrypted result
         uses: actions/upload-artifact@v4
         with:
-          name: pikpak-mcp-read-test-${{ github.run_id }}
+          name: pikpak-read-result-${{ github.run_id }}
           path: encrypted-result/
           if-no-files-found: error
           retention-days: 1
