@@ -42,11 +42,14 @@ The bridge is for temporary transport, so Git history is the wrong storage layer
 
 The workflow keeps artifacts for **1 day** by default.
 
+GitHub's Artifact transport already provides an archive for download. **Do not manually ZIP a single source file just to move it through this bridge.** The original payload is kept byte-for-byte unchanged, including when it is already a `.zip`, `.7z`, `.rar`, `.mp4`, `.img`, `.onnx`, `.engine`, etc. The workflow uses Artifact compression level `0` to avoid wasting CPU on already-compressed or incompressible files.
+
 References:
 
 - GitHub: Store and share data with workflow artifacts: https://docs.github.com/en/actions/tutorials/store-and-share-data
 - GitHub: Actions limits and storage: https://docs.github.com/en/actions/reference/limits
 - GitHub: Secure use reference: https://docs.github.com/en/actions/reference/security/secure-use
+- `actions/upload-artifact`: https://github.com/actions/upload-artifact
 
 ## ChatGPT protocol
 
@@ -106,12 +109,11 @@ FILE_TRANSFER_RESULT_V1
 
 ChatGPT should parse `artifact_id` from the success comment and use the connected GitHub Artifact download capability to retrieve it.
 
-The artifact contains:
+After downloading the Artifact archive, its root contains:
 
 ```text
-payload/
-  <downloaded file>
-  transfer.json
+<downloaded file>
+transfer.json
 ```
 
 `transfer.json` contains the downloaded file's size, SHA-256, MIME type, source host and timestamp. Query parameters are not copied into the metadata.
@@ -186,6 +188,16 @@ The workflow writes the response body to disk and uploads it as an Artifact. It 
 
 GitHub states that hosted runners execute in ephemeral clean virtual machines. The workflow intentionally does **not** use a self-hosted runner because this bridge handles untrusted remote content.
 
+## Verified bridge test
+
+The issue-triggered path has been tested end-to-end with a public test URL:
+
+```text
+GitHub-connected agent -> Issue -> GitHub Actions -> Artifact -> GitHub connector download
+```
+
+The downloaded file's SHA-256 was checked against the value reported by the workflow and matched.
+
 ## Repository files
 
 ```text
@@ -193,6 +205,7 @@ GitHub states that hosted runners execute in ephemeral clean virtual machines. T
 scripts/fetch_file.py                 request parser + secure downloader
 scripts/comment_issue.py              machine-readable result comment
 AGENTS.md                             operating instructions for AI agents
+.gitignore                            prevents accidental transient-output commits
 README.md                             human-facing protocol
 ```
 
