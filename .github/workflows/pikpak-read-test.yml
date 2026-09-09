@@ -80,13 +80,15 @@ jobs:
         run: |
           cat > /tmp/pikpak-public.pem <<'PEM'
           -----BEGIN PUBLIC KEY-----
-          MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtVS73j/kKyFz2E1ujGks
-          1ZbIt8VoePVux6YmqsteTJyK61e1E3yxkTtpcys0L1k5nEv46SJblgscVRDW8OOn
-          32/qSQsaS+59XJI3+g070J7WkUUQvWVhZZqaa0wSzpOjOe3/7u6ddsgIo5OnPw9F
-          fDIU7gHOpdEQgJ5w2NgOZPiw0dP1XoGPJ7nhxE4KSOGZPDfkG16l4k3QHsFjxu+d
-          9SrQFRtp5MqlVKK0h0tT6IZo4UIko9SLO7t6QgtvpJPBt0ANy14C0Dsr4oVC3Tmd
-          rnLQTR3tWcTUA8BSM/kaVXumDHbKFlnNAhnSa4i5ineZsJsJqjkaPiJsrg4t25D9
-          4QIDAQAB
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEA230YtuQDZCvfqdn7dwQx
+          gXWFqnFzy+6Z8TCi377ebmpA7OPgMFZfcPOd/9P3qQcJxCkLSCQn0ZGAE9H7R4zV
+          9DA0swI4fHvbpzcYRcyww22N2KKMNfLRTT3hOsJpu1vMBEwF08jwmHyVwyKg3slN
+          DjcBmKcFxJo61AkEVEZW2AnqnYl1R9Dze3JXSK1sXyoZe2m7DNytIjHRUkOoscMI
+          9FkTNulUyEMiInhvDGj8TXnSu8JZXx2W6uG1G4DytkNa3vO/JTzqsx1viZSmd9r6
+          VRb65s4UBLOlNKXKmxz9+o0LTF55Vzkh5N9GDm1D8iS+otcYtbCKhMLHts4d+avO
+          IsXbN+goW0esPHPTfWJECt/STcymKEeVkU4hDOHARTIvnF38wCmFz6YkzxGmQNR2
+          gYxzQkPEDyz/tzHye2LcHE+QUaN/hIxzuEhG4STeaPUD2hE+ITWXIUeKfLyQi+Mv
+          y5bTT2M/iiTgVdkjUxaEaEGhx30tO6TMbWZVAkQV0+jBAgMBAAE=
           -----END PUBLIC KEY-----
           PEM
           mkdir -p encrypted-result
