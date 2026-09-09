@@ -20,7 +20,7 @@ There are two owner-triggered Issue modes:
 
 This repository is public. Never publish account credentials, cookies, bearer tokens, private object-storage credentials, or signed URLs that expose private data.
 
-A public media CDN may use an expiring query signature purely for playback/anti-hotlink purposes. It may be used only when the user explicitly supplied it, it contains no account/session credential, it accesses content the user is permitted to access, and publishing the short-lived URL does not expose private data. Close such Issues promptly after receipt.
+A public media CDN may use an expiring query signature purely for playback/anti-hotlink purposes. It may be used only when the user explicitly supplied it, it contains no account/session credential, it accesses content the user is permitted to access, and publishing the short-lived URL does not expose private data. Close such Issues promptly after receipt and do not copy the URL into permanent documentation.
 
 ## `[transfer]` protocol
 
