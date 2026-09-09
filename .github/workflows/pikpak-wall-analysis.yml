@@ -1,0 +1,183 @@
+name: PikPak Wall Analysis Fetch
+run-name: PikPak Wall Analysis Fetch
+
+on:
+  push:
+    paths:
+      - .github/workflows/pikpak-wall-analysis.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
+      PIKPAK_MCP_URL: https://api-open.mypikpak.com/mcp
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Find and fetch target privately
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pikpak-wall/private/files /tmp/pikpak-wall/app
+          cd /tmp/pikpak-wall/app
+          npm init -y >/dev/null 2>&1
+          npm install --no-audit --no-fund @modelcontextprotocol/client >/dev/null
+          cat > fetch.mjs <<'NODE'
+          import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { Readable } from 'node:stream';
+          import { pipeline } from 'node:stream/promises';
+
+          const token = process.env.PIKPAK_PAT;
+          if (!token) throw new Error('PIKPAK_PAT is missing');
+          const outDir = '/tmp/pikpak-wall/private';
+          const filesDir = path.join(outDir, 'files');
+          const client = new Client({name:'github-actions-pikpak-wall-fetch',version:'1.0.0'},{versionNegotiation:{mode:'auto'}});
+          const transport = new StreamableHTTPClientTransport(new URL(process.env.PIKPAK_MCP_URL), {authProvider:{token:async()=>token}});
+
+          function decode(result) {
+            const texts = (result?.content ?? []).filter(x => x?.type === 'text').map(x => x.text).filter(Boolean);
+            if (!texts.length) return {};
+            const joined = texts.join('\n');
+            try { return JSON.parse(joined); } catch { return {raw_text: joined}; }
+          }
+
+          function findDownloadUrl(v) {
+            if (!v) return null;
+            if (typeof v === 'string') {
+              if (/^https?:\/\//i.test(v)) return v;
+              return null;
+            }
+            if (Array.isArray(v)) {
+              for (const x of v) { const u = findDownloadUrl(x); if (u) return u; }
+              return null;
+            }
+            if (typeof v === 'object') {
+              for (const k of ['download_url','downloadUrl','url']) {
+                if (typeof v[k] === 'string' && /^https?:\/\//i.test(v[k])) return v[k];
+              }
+              for (const x of Object.values(v)) { const u = findDownloadUrl(x); if (u) return u; }
+            }
+            return null;
+          }
+
+          async function listFolder(parentId) {
+            const out = [];
+            let pageToken = '';
+            for (let page=0; page<100; page++) {
+              const args = {parent_id: parentId, limit: 100};
+              if (pageToken) args.token = pageToken;
+              const data = decode(await client.callTool({name:'ls', arguments:args}));
+              const files = Array.isArray(data.files) ? data.files : [];
+              out.push(...files);
+              pageToken = data.next_page_token || data.nextPageToken || '';
+              if (!pageToken || files.length === 0) break;
+            }
+            return out;
+          }
+
+          const all = [];
+          async function walk(parentId, parentPath, depth=0) {
+            if (depth > 10 || all.length > 10000) return;
+            const items = await listFolder(parentId);
+            for (const item of items) {
+              const p = parentPath === '/' ? `/${item.name}` : `${parentPath}/${item.name}`;
+              const rec = {id:item.id,name:item.name,kind:item.kind,size:item.size,mime_type:item.mime_type,file_category:item.file_category,modified:item.modified,hash:item.hash,path:p};
+              all.push(rec);
+              if (item.kind === 'folder') await walk(item.id, p, depth+1);
+            }
+          }
+
+          function safeName(name, index) {
+            const cleaned = String(name || `wall-${index}`).replace(/[\\/\0]/g, '_');
+            return `${String(index+1).padStart(2,'0')}-${cleaned}`;
+          }
+
+          try {
+            await client.connect(transport);
+            await walk('', '/');
+            const files = all.filter(x => x.kind === 'file');
+            const stem = n => String(n || '').replace(/\.[^.]+$/, '');
+            let matches = files.filter(x => stem(x.name).toLowerCase() === 'wall');
+            let matchMode = 'exact-stem';
+            if (!matches.length) {
+              matches = files.filter(x => String(x.name || '').toLowerCase().includes('wall'));
+              matchMode = 'substring';
+            }
+            matches = matches.slice(0, 5);
+            const manifest = {generated_at:new Date().toISOString(), scanned_items:all.length, match_mode:matchMode, matches:[]};
+            for (let i=0; i<matches.length; i++) {
+              const m = matches[i];
+              const detail = decode(await client.callTool({name:'get', arguments:{id:m.id, url_type:'download'}}));
+              const downloadUrl = findDownloadUrl(detail);
+              const meta = {...m, download_url_found:Boolean(downloadUrl)};
+              if (!downloadUrl) {
+                meta.download_error = 'No download URL returned by PikPak get tool';
+                manifest.matches.push(meta);
+                continue;
+              }
+              const sizeNum = Number(m.size || 0);
+              if (Number.isFinite(sizeNum) && sizeNum > 800 * 1024 * 1024) {
+                meta.download_error = 'File exceeds 800 MiB safety cap';
+                manifest.matches.push(meta);
+                continue;
+              }
+              const resp = await fetch(downloadUrl, {redirect:'follow', headers:{'user-agent':'Mozilla/5.0'}});
+              if (!resp.ok || !resp.body) {
+                meta.download_error = `HTTP ${resp.status}`;
+                manifest.matches.push(meta);
+                continue;
+              }
+              const dest = path.join(filesDir, safeName(m.name, i));
+              await pipeline(Readable.fromWeb(resp.body), fs.createWriteStream(dest));
+              meta.local_name = path.basename(dest);
+              meta.downloaded_bytes = fs.statSync(dest).size;
+              manifest.matches.push(meta);
+            }
+            fs.writeFileSync(path.join(outDir,'manifest.json'), JSON.stringify(manifest,null,2));
+            console.log(`PikPak scan complete. ${matches.length} candidate(s) matched; private names/content were not printed.`);
+          } finally { try { await client.close(); } catch {} }
+          NODE
+          node fetch.mjs
+
+      - name: Encrypt private payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -C /tmp/pikpak-wall/private -cf /tmp/pikpak-wall/payload.tar .
+          cat > /tmp/pikpak-wall/public.pem <<'PEM'
+          -----BEGIN PUBLIC KEY-----
+          MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAsI8mXvbZkp/KktYAvgTx
+          lU40zGNdnLbhU5AXmZWla+xswM3ZS9zsoWGoQo2qd9FAzX7dO0TkvcIJqqtvQm89
+          plI9GfjM7dhGBtp2SF3v7udnRJddB+2m6IzuL+jHPU9nri2LfLe2P+2x7OfW/fJ2
+          EpE00wGDNZTrtBrjvpGsh6JE4zy7vxu5UErnIP8uzGtlP6VkjpkOoiA5aiEdiv1D
+          XvfNuG8ZJ47DSF+SIBE1JPk0idsga5/dq48yNiLGdAekx9RBE+meE7CRqEZRSb8M
+          9NJKfoMaZ+MiXV0b68CQv1yEKFqN+0m/nBy2A2HDiPt0zzbKaTTGV8oJoO9dGetq
+          tzwb5PPk0y4Ni+9K1W+isLE4ILCLpxmdsX0FcrV2KOQykkgf1E9WV93896A2aMLp
+          vIkRP+oVNSjIhB4y1XldmUe/V6HBz9QX+UWCDwPKt6t8ctvBONHFDsH5KfaZ+lxI
+          7HZjW+K9jx3xVSmbRq83GmwWEBosdg5ZX17nj/unLu/RAgMBAAE=
+          -----END PUBLIC KEY-----
+          PEM
+          mkdir -p /tmp/pikpak-wall/encrypted
+          openssl rand -hex 32 > /tmp/pikpak-wall/key.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -in /tmp/pikpak-wall/payload.tar -out /tmp/pikpak-wall/encrypted/payload.enc -pass file:/tmp/pikpak-wall/key.txt
+          openssl pkeyutl -encrypt -pubin -inkey /tmp/pikpak-wall/public.pem -in /tmp/pikpak-wall/key.txt -out /tmp/pikpak-wall/encrypted/key.enc -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          rm -rf /tmp/pikpak-wall/private /tmp/pikpak-wall/payload.tar /tmp/pikpak-wall/key.txt
+
+      - name: Upload encrypted result
+        uses: actions/upload-artifact@v4
+        with:
+          name: pikpak-wall-private-${{ github.run_id }}
+          path: /tmp/pikpak-wall/encrypted/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
