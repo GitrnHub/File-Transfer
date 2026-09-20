@@ -4,7 +4,6 @@ on:
   push:
     paths:
       - ".github/workflows/gdrive-speed-test.yml"
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -12,28 +11,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Download to /dev/null and measure throughput
+      - name: Install gdown
+        run: python -m pip install -q --disable-pip-version-check gdown
+
+      - name: Stream Google Drive file to /dev/null
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://drive.usercontent.google.com/download?id=13xLyrVGUyF7DMG8C_EmgLZEcFghMoQN2&export=download&confirm=t'
+          URL='https://drive.google.com/file/d/13xLyrVGUyF7DMG8C_EmgLZEcFghMoQN2/view'
+          SIZE_BYTES=5825895630
 
-          echo "Runner: $(uname -a)"
           echo "UTC start: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          START_NS=$(date +%s%N)
 
-          METRICS=$(curl -L --fail --silent --show-error \
-            --output /dev/null \
-            --write-out '%{http_code} %{size_download} %{time_total} %{speed_download} %{url_effective}\n' \
-            "$URL")
+          gdown --fuzzy "$URL" -O /dev/null --quiet
 
-          read -r HTTP_CODE SIZE_BYTES TIME_SECONDS SPEED_BPS EFFECTIVE_URL <<< "$METRICS"
-
-          awk -v size="$SIZE_BYTES" -v sec="$TIME_SECONDS" -v speed="$SPEED_BPS" 'BEGIN {
-            printf "HTTP status: %s\n", "'"$HTTP_CODE"'";
-            printf "Downloaded: %.2f MiB (%.2f GiB)\n", size/1048576, size/1073741824;
+          END_NS=$(date +%s%N)
+          ELAPSED=$(awk -v s="$START_NS" -v e="$END_NS" 'BEGIN {printf "%.3f", (e-s)/1000000000}')
+          awk -v size="$SIZE_BYTES" -v sec="$ELAPSED" 'BEGIN {
+            printf "Expected file size: %d bytes (%.2f GiB)\n", size, size/1073741824;
             printf "Elapsed: %.3f s\n", sec;
-            printf "Average: %.2f MiB/s\n", speed/1048576;
-            printf "Average: %.2f Mbit/s\n", speed*8/1000000;
+            printf "Average: %.2f MiB/s\n", (size/sec)/1048576;
+            printf "Average: %.2f Mbit/s\n", (size/sec)*8/1000000;
           }'
-          echo "Effective URL host: $(printf '%s' "$EFFECTIVE_URL" | sed -E 's#(https?://[^/]+).*#\1#')"
           echo "UTC end: $(date -u '+%Y-%m-%d %H:%M:%S')"
