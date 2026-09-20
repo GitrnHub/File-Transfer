@@ -33,7 +33,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          assets="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100"             --jq ".[] | select(.tag_name == \"$TAG\") | .assets[]?.name" 2>/dev/null || true)"
+          assets="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .assets[]?.name" 2>/dev/null || true)"
           if printf '%s\n' "$assets" | grep -Fxq "TRANSFER_COMPLETE.txt"; then
             echo "complete=true" >> "$GITHUB_OUTPUT"
             echo "Transfer is already complete; skipping." >> "$GITHUB_STEP_SUMMARY"
@@ -80,18 +80,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum "$OUTPUT_FILE" | tee firmware.sha256
+          sha256sum "$OUTPUT_FILE" | awk '{print $1}' | tee firmware.sha256
           split -b 1900M -d -a 2 "$OUTPUT_FILE" "PD2352_15.1.6.7_QFIL.zip.part-"
           rm -f "$OUTPUT_FILE"
 
           cat > REASSEMBLE.txt <<'EOF'
-          This is a private transfer copy split only because GitHub Release assets must each be under 2 GiB.
+          This is a private transfer copy split only because each GitHub Release asset must be under 2 GiB.
 
           Linux/macOS:
             cat PD2352_15.1.6.7_QFIL.zip.part-* > PD2352_firmware.zip
-            sha256sum -c firmware.sha256
+            echo "$(cat firmware.sha256)  PD2352_firmware.zip" | sha256sum -c -
 
-          The firmware.sha256 entry contains the SHA-256 of the original full ZIP.
+          firmware.sha256 contains the SHA-256 of the original full ZIP.
           EOF
 
           ls -lh PD2352_15.1.6.7_QFIL.zip.part-* firmware.sha256 REASSEMBLE.txt
@@ -103,10 +103,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_id="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100"             --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -n1 || true)"
+          release_id="$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -n1 || true)"
 
           if [ -z "$release_id" ]; then
-            gh release create "$TAG"               --repo "$GITHUB_REPOSITORY"               --target "main"               --draft               --title "PD2352 15.1.6.7 private transfer"               --notes "Automated private transfer. This release remains a draft and is not published."
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "main" --draft --title "PD2352 15.1.6.7 private transfer" --notes "Automated private transfer. This release remains a draft and is not published."
           fi
 
       - name: Upload firmware parts to draft release
@@ -116,10 +116,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$TAG"             PD2352_15.1.6.7_QFIL.zip.part-*             firmware.sha256             REASSEMBLE.txt             --clobber             --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" PD2352_15.1.6.7_QFIL.zip.part-* firmware.sha256 REASSEMBLE.txt --clobber --repo "$GITHUB_REPOSITORY"
 
           printf 'complete\n' > TRANSFER_COMPLETE.txt
-          gh release upload "$TAG" TRANSFER_COMPLETE.txt             --clobber             --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" TRANSFER_COMPLETE.txt --clobber --repo "$GITHUB_REPOSITORY"
 
           echo "Firmware transfer completed into a DRAFT release." >> "$GITHUB_STEP_SUMMARY"
           echo "Tag: $TAG" >> "$GITHUB_STEP_SUMMARY"
