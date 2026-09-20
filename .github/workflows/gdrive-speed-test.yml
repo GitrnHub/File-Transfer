@@ -18,13 +18,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://drive.google.com/file/d/13xLyrVGUyF7DMG8C_EmgLZEcFghMoQN2/view'
+          FILE_ID='13xLyrVGUyF7DMG8C_EmgLZEcFghMoQN2'
           SIZE_BYTES=5825895630
 
           echo "UTC start: $(date -u '+%Y-%m-%d %H:%M:%S')"
           START_NS=$(date +%s%N)
 
-          gdown --fuzzy "$URL" -O /dev/null --quiet
+          gdown "$FILE_ID" -O /dev/null --quiet
 
           END_NS=$(date +%s%N)
           ELAPSED=$(awk -v s="$START_NS" -v e="$END_NS" 'BEGIN {printf "%.3f", (e-s)/1000000000}')
