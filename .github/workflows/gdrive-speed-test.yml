@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - ".github/workflows/gdrive-speed-test.yml"
+  pull_request:
   workflow_dispatch:
 
 jobs:
