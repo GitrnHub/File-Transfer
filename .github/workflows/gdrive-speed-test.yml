@@ -16,7 +16,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://drive.usercontent.google.com/download?id=1B5jGoJxhOmhOhvpmnEP9wfzKBo2we7Vv&export=download&authuser=0&confirm=t&uuid=f20963ac-ffcf-4fd9-9875-02d4ab1c0cb1&at=AMrWOn2RWi2FhL22KH41c5F1hsd3:1789886764126'
+          URL='https://drive.usercontent.google.com/download?id=13xLyrVGUyF7DMG8C_EmgLZEcFghMoQN2&export=download&confirm=t'
 
           echo "Runner: $(uname -a)"
           echo "UTC start: $(date -u '+%Y-%m-%d %H:%M:%S')"
