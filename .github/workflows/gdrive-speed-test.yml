@@ -1,4 +1,4 @@
-name: PD2352 mirror download probe
+name: PD2352 ONFIX probe
 
 on:
   push:
@@ -10,16 +10,14 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe FirmwareDrive download endpoint
+      - name: Probe ONFIX listing
         shell: bash
         run: |
           set -euo pipefail
-          URL='https://firmwaredrive.com/index.php?a=downloads&b=file&c=download&id=108627'
-          echo "--- redirect/header chain ---"
-          curl -sSIL -A 'Mozilla/5.0' --max-time 30 "$URL" || true
-          echo "--- tiny range probe ---"
-          curl -sSL -A 'Mozilla/5.0' --range 0-1023 --max-time 30             -D headers.txt "$URL" -o sample.bin || true
-          cat headers.txt || true
-          echo "Sample bytes: $(wc -c < sample.bin 2>/dev/null || echo 0)"
-          file sample.bin 2>/dev/null || true
-          head -c 200 sample.bin 2>/dev/null | strings | head -n 10 || true
+          URL='https://onfix.cn/rom?bid=5&mid=29970&page=1'
+          curl -L --silent --show-error -A 'Mozilla/5.0' "$URL" -o page.html
+          echo "Page bytes: $(wc -c < page.html)"
+          echo "--- matching context ---"
+          grep -n -B 8 -A 12 '15\.1\.6\.7\.W10' page.html | head -n 160 || true
+          echo "--- candidate URLs ---"
+          grep -Eoi 'https?://[^"<> ]+|href="[^"]+"|data-[a-zA-Z0-9_-]+="[^"]+"' page.html |             grep -Ei 'rom|down|download|file|2352|6\.7|api' | head -n 160 || true
