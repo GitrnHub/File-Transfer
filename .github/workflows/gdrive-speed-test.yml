@@ -1,4 +1,4 @@
-name: PD2352 firmware transfer test
+name: PD2352 mirror probe
 
 on:
   push:
@@ -7,25 +7,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  transfer-test:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     steps:
-      - name: Runner disk
-        run: df -h
-
-      - name: Install gdown
-        run: python -m pip install -q --disable-pip-version-check gdown
-
-      - name: Test exact PD2352 file
+      - name: Probe FirmwareDrive exact file page
         shell: bash
         run: |
           set -euo pipefail
-          FILE_ID='19WGVGBjJl8-01px0DSQyB0xp-_JcUZVE'
-          echo "UTC start: $(date -u '+%Y-%m-%d %H:%M:%S')"
-          START_NS=$(date +%s%N)
-          gdown "$FILE_ID" -O /dev/null
-          END_NS=$(date +%s%N)
-          ELAPSED=$(awk -v s="$START_NS" -v e="$END_NS" 'BEGIN {printf "%.3f", (e-s)/1000000000}')
-          echo "Elapsed: $ELAPSED s"
-          echo "UTC end: $(date -u '+%Y-%m-%d %H:%M:%S')"
+          URL='https://firmwaredrive.com/index.php?a=downloads&b=file&id=108627'
+          curl -L --fail --silent --show-error -A 'Mozilla/5.0' "$URL" -o page.html
+          echo "Page bytes: $(wc -c < page.html)"
+          echo "--- candidate links ---"
+          grep -Eoi 'href="[^"]+"|https?://[^"<> ]+' page.html |             grep -Ei 'download|cdn|drive|108627|zip|file' | head -n 100 || true
+          echo "--- title markers ---"
+          grep -Eoi 'PD2352[^<"]+|10\.72 GB|login|register|download' page.html | head -n 60 || true
