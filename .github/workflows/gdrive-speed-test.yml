@@ -1,0 +1,38 @@
+name: Google Drive direct-link speed test
+
+on:
+  push:
+    paths:
+      - ".github/workflows/gdrive-speed-test.yml"
+  workflow_dispatch:
+
+jobs:
+  speed-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download to /dev/null and measure throughput
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://drive.usercontent.google.com/download?id=1B5jGoJxhOmhOhvpmnEP9wfzKBo2we7Vv&export=download&authuser=0&confirm=t&uuid=f20963ac-ffcf-4fd9-9875-02d4ab1c0cb1&at=AMrWOn2RWi2FhL22KH41c5F1hsd3:1789886764126'
+
+          echo "Runner: $(uname -a)"
+          echo "UTC start: $(date -u '+%Y-%m-%d %H:%M:%S')"
+
+          METRICS=$(curl -L --fail --silent --show-error \
+            --output /dev/null \
+            --write-out '%{http_code} %{size_download} %{time_total} %{speed_download} %{url_effective}\n' \
+            "$URL")
+
+          read -r HTTP_CODE SIZE_BYTES TIME_SECONDS SPEED_BPS EFFECTIVE_URL <<< "$METRICS"
+
+          awk -v size="$SIZE_BYTES" -v sec="$TIME_SECONDS" -v speed="$SPEED_BPS" 'BEGIN {
+            printf "HTTP status: %s\n", "'"$HTTP_CODE"'";
+            printf "Downloaded: %.2f MiB (%.2f GiB)\n", size/1048576, size/1073741824;
+            printf "Elapsed: %.3f s\n", sec;
+            printf "Average: %.2f MiB/s\n", speed/1048576;
+            printf "Average: %.2f Mbit/s\n", speed*8/1000000;
+          }'
+          echo "Effective URL host: $(printf '%s' "$EFFECTIVE_URL" | sed -E 's#(https?://[^/]+).*#\1#')"
+          echo "UTC end: $(date -u '+%Y-%m-%d %H:%M:%S')"
