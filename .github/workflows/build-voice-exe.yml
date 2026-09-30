@@ -1,0 +1,95 @@
+name: Build VideoPreprocessor EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "voice-build/**"
+      - ".github/workflows/build-voice-exe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: "pip"
+          cache-dependency-path: voice-build/app/build/requirements-build.txt
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r voice-build/app/build/requirements-build.txt
+          python -m pip check
+
+      - name: Stage NVIDIA JPEG runtime DLLs
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import shutil
+          import site
+
+          target = Path("voice-build/app/videopack/native")
+          target.mkdir(parents=True, exist_ok=True)
+          roots = [Path(p) for p in site.getsitepackages()]
+          wanted = ("nvjpeg64_13.dll", "cudart64_13.dll")
+          for name in wanted:
+              matches = []
+              for root in roots:
+                  matches.extend(root.rglob(name))
+              if not matches:
+                  raise SystemExit(f"Required NVIDIA DLL not found after pip install: {name}")
+              src = matches[0]
+              print(f"{name}: {src}")
+              shutil.copy2(src, target / name)
+          '@ | python -
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean `
+            --distpath voice-build/dist `
+            --workpath voice-build/.pyinstaller `
+            voice-build/app/build/VideoPreprocessor.spec
+
+      - name: Keep config external
+        shell: pwsh
+        run: |
+          Copy-Item voice-build/app/config.json voice-build/dist/VideoPreprocessor/config.json -Force
+
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          & voice-build/dist/VideoPreprocessor/VideoPreprocessor.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          $zip = "voice-build/VideoPreprocessor-Windows-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path voice-build/dist/VideoPreprocessor/* -DestinationPath $zip -CompressionLevel Optimal
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoPreprocessor-Windows-x64
+          path: voice-build/VideoPreprocessor-Windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
