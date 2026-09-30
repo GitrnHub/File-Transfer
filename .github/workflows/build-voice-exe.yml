@@ -5,8 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "voice-build/**"
-      - ".github/workflows/build-voice-exe.yml"
+      - "voice-build/READY"
 
 permissions:
   contents: read
@@ -19,6 +18,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem voice-build/source.part* | Sort-Object Name
+          if (-not $parts) { throw "No source parts found" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          [IO.File]::WriteAllBytes("voice-build/source.zip", [Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Force voice-build/app | Out-Null
+          Expand-Archive voice-build/source.zip -DestinationPath voice-build/app -Force
 
       - name: Set up Python 3.12 x64
         uses: actions/setup-python@v5
