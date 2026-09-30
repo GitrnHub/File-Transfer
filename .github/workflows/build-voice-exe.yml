@@ -19,13 +19,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Restore source archive
+      - name: Restore verified source archive
         shell: pwsh
         run: |
           $parts = Get-ChildItem voice-build/source.part* | Sort-Object Name
           if (-not $parts) { throw "No source parts found" }
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
           [IO.File]::WriteAllBytes("voice-build/source.zip", [Convert]::FromBase64String($b64))
+          $expected = "ae9f66664b8d3e84f8d329ee3469f82945af595b67b72cb93ead99d1a6b2bfd5"
+          $actual = (Get-FileHash "voice-build/source.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Source ZIP SHA256 mismatch: $actual" }
+          Write-Host "Source ZIP verified: $actual"
           New-Item -ItemType Directory -Force voice-build/app | Out-Null
           Expand-Archive voice-build/source.zip -DestinationPath voice-build/app -Force
 
@@ -44,28 +48,44 @@ jobs:
           python -m pip install -r voice-build/app/build/requirements-build.txt
           python -m pip check
 
-      - name: Stage NVIDIA JPEG runtime DLLs
+      - name: Stage exact NVIDIA JPEG runtime DLLs
         shell: pwsh
         run: |
-          @'
-          from pathlib import Path
-          import shutil
-          import site
+          $ErrorActionPreference = "Stop"
+          $native = "voice-build/app/videopack/native"
+          $tmp = "voice-build/nvidia-redist"
+          New-Item -ItemType Directory -Force $native, $tmp | Out-Null
 
-          target = Path("voice-build/app/videopack/native")
-          target.mkdir(parents=True, exist_ok=True)
-          roots = [Path(p) for p in site.getsitepackages()]
-          wanted = ("nvjpeg64_13.dll", "cudart64_13.dll")
-          for name in wanted:
-              matches = []
-              for root in roots:
-                  matches.extend(root.rglob(name))
-              if not matches:
-                  raise SystemExit(f"Required NVIDIA DLL not found after pip install: {name}")
-              src = matches[0]
-              print(f"{name}: {src}")
-              shutil.copy2(src, target / name)
-          '@ | python -
+          $packages = @(
+            @{
+              Url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.2.75-archive.zip"
+              Dll = "cudart64_13.dll"
+              Sha256 = "cac649f5d659f89713ebc5d426573ca7cf873d57af7e40767b068fe3606120db"
+            },
+            @{
+              Url = "https://developer.download.nvidia.com/compute/cuda/redist/libnvjpeg/windows-x86_64/libnvjpeg-windows-x86_64-13.1.0.48-archive.zip"
+              Dll = "nvjpeg64_13.dll"
+              Sha256 = "ae8a7e076607e97893ecd4a93ca62be1654a3e2596f58af961e09853a4bdab43"
+            }
+          )
+
+          foreach ($pkg in $packages) {
+            $archive = Join-Path $tmp ($pkg.Dll + ".zip")
+            $unpack = Join-Path $tmp ($pkg.Dll + "-unpack")
+            Invoke-WebRequest -Uri $pkg.Url -OutFile $archive
+            Expand-Archive $archive -DestinationPath $unpack -Force
+            $matches = @(Get-ChildItem $unpack -Recurse -File -Filter $pkg.Dll)
+            if ($matches.Count -ne 1) {
+              throw "Expected exactly one $($pkg.Dll), found $($matches.Count)"
+            }
+            $src = $matches[0].FullName
+            $actual = (Get-FileHash $src -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $pkg.Sha256) {
+              throw "$($pkg.Dll) SHA256 mismatch: $actual"
+            }
+            Copy-Item $src (Join-Path $native $pkg.Dll) -Force
+            Write-Host "$($pkg.Dll) verified: $actual"
+          }
 
       - name: Build EXE
         shell: pwsh
@@ -85,11 +105,14 @@ jobs:
         run: |
           & voice-build/dist/VideoPreprocessor/VideoPreprocessor.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path voice-build/dist/VideoPreprocessor/config.json)) {
+            throw "External config.json missing from portable folder"
+          }
 
       - name: Create portable ZIP
         shell: pwsh
         run: |
-          $zip = "voice-build/VideoPreprocessor-Windows-x64.zip"
+          $zip = "voice-build/VideoPreprocessor-v1.6.0-Windows-x64.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path voice-build/dist/VideoPreprocessor/* -DestinationPath $zip -CompressionLevel Optimal
           Get-FileHash $zip -Algorithm SHA256 | Format-List
@@ -97,8 +120,8 @@ jobs:
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VideoPreprocessor-Windows-x64
-          path: voice-build/VideoPreprocessor-Windows-x64.zip
+          name: VideoPreprocessor-v1.6.0-Windows-x64
+          path: voice-build/VideoPreprocessor-v1.6.0-Windows-x64.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
