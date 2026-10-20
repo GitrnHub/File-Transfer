@@ -108,6 +108,35 @@ jobs:
           if($child.Count -eq 0){throw 'Browser engine not started'}
           Write-Output 'V2_STARTUP_OK'
           Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'Baidu|Yun|Netdisk'} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}
+      - name: Delete test-generated user data and verify all original bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'Baidu|Yun|Netdisk'} |
+            ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}
+          Start-Sleep -Seconds 3
+          $base=(Resolve-Path portable/App).Path
+          $manifest=Get-Content portable/Manifest.json -Encoding UTF8 -Raw | ConvertFrom-Json
+          $known=@{}
+          foreach($record in $manifest.files){
+            $rel=$record.path.Replace('/','\\').ToLowerInvariant()
+            $known[$rel]=$true
+            $target=Join-Path $base $record.path
+            if(!(Test-Path -LiteralPath $target)){throw "Missing original: $target"}
+            $hash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+            if($hash -ne $record.sha256){throw "Modified original file: $target"}
+          }
+          $extra=0
+          foreach($file in @(Get-ChildItem -LiteralPath $base -Recurse -File -Force)){
+            $rel=$file.FullName.Substring($base.Length+1).ToLowerInvariant()
+            if(!$known.ContainsKey($rel) -and $rel -ne 'portableentry.cmd'){
+              Remove-Item -LiteralPath $file.FullName -Force
+              $extra++
+            }
+          }
+          Remove-Item portable/Data -Recurse -Force
+          New-Item -Path portable/Data/Local,portable/Data/Roaming,portable/Data/Temp,portable/Data/Logs -Force -ItemType Directory | Out-Null
+          Write-Output "CLEAN_PACKAGE_OK originals=$($manifest.files.Count) removed_test_generated=$extra"
       - name: Publish single portable ZIP artifact
         uses: actions/upload-artifact@v4
         with:
