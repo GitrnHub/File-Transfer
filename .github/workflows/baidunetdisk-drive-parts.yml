@@ -1,0 +1,34 @@
+name: BaiduNetdisk Drive-safe Chunks
+on:
+  push:
+    paths:
+      - .github/workflows/baidunetdisk-drive-parts.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Retrieve verified original installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir payload
+          gh run download 39484634746 --repo "$GITHUB_REPOSITORY" --name file-transfer-17 --dir payload
+          echo '3bb9c6066dee502e8852170ea57cf52b3134c96521dffb6ee3d13d0862fd4086  payload/BaiduNetdisk_8.9.2.101.exe' | sha256sum -c -
+          mkdir -p chunks
+          split -b 80m -d -a 3 --numeric-suffixes=1 payload/BaiduNetdisk_8.9.2.101.exe chunks/BaiduNetdisk_8.9.2.101.exe.
+          sha256sum chunks/* > chunks-checksums.txt
+          ls -lh chunks/
+      - name: Upload chunks independently
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaiduNetdisk-small-chunks
+          path: |
+            chunks/
+            chunks-checksums.txt
+          retention-days: 1
+          compression-level: 0
