@@ -1,0 +1,100 @@
+name: Baidu Portable Path and GUI Probe
+on:
+  push:
+    paths:
+      - .github/workflows/baidu-portable-path-probe.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 27
+    steps:
+      - name: Fetch previously built stripped portable artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 39492854896 --repo "$env:GITHUB_REPOSITORY" --name BaiduNetdisk-8.9.2.101-Portable-Lite --dir portable
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download verified portable artifact" }
+          Get-ChildItem portable | Select-Object Name,Length
+          if (!(Test-Path portable/App/BaiduNetdisk.exe)) { throw "Main EXE missing" }
+      - name: Inspect install-directory write access and probe three environments
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          $root=(Resolve-Path portable).Path
+          $app=Join-Path $root 'App'
+          $exe=Join-Path $app 'BaiduNetdisk.exe'
+          $all=@((Get-Item $app)) + @(Get-ChildItem $app -Directory -Recurse -Force)
+          $bad=@()
+          foreach($d in $all) {
+            $p=Join-Path $d.FullName (".writable_probe_"+[guid]::NewGuid().ToString('N')+".tmp")
+            try { [IO.File]::WriteAllText($p,'test'); Remove-Item -LiteralPath $p -Force }
+            catch { $bad+= ("$($d.FullName): $($_.Exception.Message)") }
+          }
+          Write-Output "WRITE_TEST total=$($all.Count) failed=$($bad.Count)"
+          $bad | Select-Object -First 20 | ForEach-Object {Write-Output "WRITE_FAIL $_"}
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Collections.Generic;
+          using System.Runtime.InteropServices;
+          public class AppWindows {
+            public delegate bool Callback(IntPtr hwnd, IntPtr param);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(Callback cb, IntPtr param);
+            [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hwnd,StringBuilder sb,int maxCount);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+            public static string[] Find(uint pid) {
+              var results = new List<string>();
+              Callback callback = (h,p) => {
+                uint cur; GetWindowThreadProcessId(h,out cur);
+                if (cur == pid) {
+                  var sb = new StringBuilder(512);GetWindowText(h,sb,sb.Capacity);
+                  results.Add("window="+h.ToString()+" visible="+IsWindowVisible(h).ToString()+" title="+sb.ToString());
+                }
+                return true;
+              };
+              EnumWindows(callback,IntPtr.Zero);
+              return results.ToArray();
+            }
+          }
+          '@
+          $vars=@('USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','HOME')
+          $saved=@{}
+          foreach ($v in $vars) { $saved[$v]=[Environment]::GetEnvironmentVariable($v,'Process') }
+          Write-Output "RUNNER_USERPROFILE $($saved['USERPROFILE'])"
+          foreach ($scenario in @('fake_profile','real_profile_fake_appdata','real_all')) {
+            foreach($v in $vars){[Environment]::SetEnvironmentVariable($v,$saved[$v],'Process')}
+            $data=Join-Path $root ("ProbeData_"+$scenario)
+            New-Item -ItemType Directory -Force -Path $data | Out-Null
+            if($scenario -eq 'fake_profile'){
+              $env:USERPROFILE=Join-Path $data 'Profile'
+              $env:APPDATA=Join-Path $data 'Roaming'
+              $env:LOCALAPPDATA=Join-Path $data 'Local'
+              $env:HOME=$env:USERPROFILE
+            }elseif($scenario -eq 'real_profile_fake_appdata'){
+              $env:APPDATA=Join-Path $data 'Roaming'
+              $env:LOCALAPPDATA=Join-Path $data 'Local'
+            }
+            $env:TEMP=Join-Path $data 'Temp';$env:TMP=$env:TEMP
+            foreach($p in @($env:USERPROFILE,$env:APPDATA,$env:LOCALAPPDATA,$env:TEMP)){
+              if(!(Test-Path $p)){New-Item -ItemType Directory -Path $p -Force | Out-Null}
+            }
+            Write-Output "SCENARIO_START $scenario USERPROFILE=$env:USERPROFILE APPDATA=$env:APPDATA LOCALAPPDATA=$env:LOCALAPPDATA"
+            try{
+              $proc=Start-Process -FilePath $exe -WorkingDirectory $app -PassThru -ErrorAction Stop
+              Write-Output "START_PID $($proc.Id)"
+              Start-Sleep -Seconds 20
+              $proc.Refresh()
+              Write-Output "AFTER_20S SCENARIO=$scenario RUNNING=$(-not $proc.HasExited) EXIT=$(if($proc.HasExited){$proc.ExitCode})"
+              [AppWindows]::Find([uint32]$proc.Id) | ForEach-Object {Write-Output "WIN_$scenario $_"}
+              Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'Baidu|Yun|Netdisk'} | Select-Object -First 15 Name,ProcessId,ParentProcessId | ConvertTo-Json -Compress | Write-Output
+              if(!$proc.HasExited){Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue}
+            }catch{Write-Output "LAUNCH_ERROR $scenario $($_.Exception.Message)"}
+            Start-Sleep -Seconds 3
+          }
+          foreach($v in $vars){[Environment]::SetEnvironmentVariable($v,$saved[$v],'Process')}
+          Write-Output "ALL_SCENARIOS_FINISHED"
