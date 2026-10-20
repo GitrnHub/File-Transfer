@@ -1,0 +1,118 @@
+name: Build BaiduNetdisk Portable Lite v2 Fixed
+on:
+  push:
+    paths:
+      - .github/workflows/build-bdn-portable-v2.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore verified earlier portable payload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 39492854896 --repo "$env:GITHUB_REPOSITORY" --name BaiduNetdisk-8.9.2.101-Portable-Lite --dir portable
+          if($LASTEXITCODE -ne 0){throw 'Source artifact not available'}
+          $hash=(Get-FileHash portable/App/BaiduNetdisk.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($hash -ne '1e8ac44dfd76ba16fd68516353d20d9e205675c13345ab4389c07e29045f53be'){throw "Wrong main EXE: $hash"}
+          Write-Output 'OFFICIAL_EXECUTABLE_VERIFIED'
+      - name: Replace bad launcher without altering program binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($f in @('Run_Portable.cmd','Run_Sandbox.cmd','Run_Unite_Experimental.cmd','Launch_WindowsSandbox.ps1','README_中文.txt','TEST_RESULTS.txt','App/PortableEntry.cmd')){
+            Remove-Item -LiteralPath (Join-Path portable $f) -Force -ErrorAction SilentlyContinue
+          }
+          Copy-Item scripts/baidu-portable-v2-launch.ps1 portable/Launch_Portable.ps1
+          @'
+          @echo off
+          setlocal
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Launch_Portable.ps1" -Mode Portable
+          if errorlevel 1 pause
+          '@ | Set-Content portable/Run_Portable.cmd -Encoding ascii
+          @'
+          @echo off
+          setlocal
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Launch_Portable.ps1" -Mode Compatibility
+          if errorlevel 1 pause
+          '@ | Set-Content portable/Run_Compatibility.cmd -Encoding ascii
+          @'
+          @echo off
+          setlocal
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Launch_Portable.ps1" -Mode Diagnose
+          pause
+          '@ | Set-Content portable/Run_Diagnose.cmd -Encoding ascii
+          @'
+          @echo off
+          call "%~dp0..\Run_Portable.cmd" %*
+          '@ | Set-Content portable/App/PortableEntry.cmd -Encoding ascii
+          New-Item -Path portable/Data/Local,portable/Data/Roaming,portable/Data/Temp,portable/Data/Logs -Force -ItemType Directory | Out-Null
+          @'
+          百度网盘 8.9.2.101 精简便携版 v2
+          =================================
+          请完整解压到 D:\PortableApps\BaiduNetdiskPortable 或其他普通可写目录，
+          不要解压到 Desktop、OneDrive、Program Files 等受保护或受管理位置。
+          1. 先运行 Run_Diagnose.cmd，逐项检查 App 所有子目录写入权限。
+          2. 运行 Run_Portable.cmd：保留真实 USERPROFILE，仅将 APPDATA/LOCALAPPDATA/TEMP 指向 Data。
+          3. 如果登录或浏览器界面失败，再试 Run_Compatibility.cmd，使用真实 Windows AppData。
+          修复原因：旧版伪造 USERPROFILE，导致浏览器引擎无法正常启动。
+          本版移除 Windows Sandbox 按钮；不需要管理员权限，不安装 Windows 服务。
+          仍然已去除 module/ImageViewer、module/AiEngine、Shell/Office/MSIX 独立系统集成。
+          updateagent.dll 是必需静态依赖，因此保留，未保留独立自动更新程序。
+          日志位置：Data\Logs\Launcher_LastRun.log。
+          不允许以管理员身份运行本版启动器。
+          注意：绿色版不是权限沙盒，程序仍拥有当前用户的文件/网络/注册表权限。
+          GitHub Windows 对照测试：https://github.com/GitrnHub/File-Transfer/actions/runs/39495104292
+          本次自动化测试只能检查主程序和浏览器引擎启动，无法验证登录、传输。
+          '@ | Set-Content portable/README_中文.txt -Encoding utf8
+      - name: Syntax and static integrity checks
+        shell: pwsh
+        run: |
+          $tokens=$null; $errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path portable/Launch_Portable.ps1).Path,[ref]$tokens,[ref]$errors) | Out-Null
+          if($errors.Count -ne 0){throw "PowerShell syntax errors $errors"}
+          if((Test-Path portable/App/module/ImageViewer) -or (Test-Path portable/App/module/AiEngine)){throw 'Excluded modules remain'}
+          if(!(Test-Path portable/App/updateagent.dll)){throw 'Required DLL missing'}
+          if(Test-Path portable/Run_Sandbox.cmd){throw 'Obsolete launcher remains'}
+          Write-Output 'LAUNCHER_SYNTAX_AND_MODULES_OK'
+      - name: Windows normal-user-profile browser engine startup smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=(Resolve-Path portable).Path
+          $app=Join-Path $root 'App'
+          $dirs=@($app)+@(Get-ChildItem $app -Directory -Recurse -Force | ForEach-Object{$_.FullName})
+          foreach($d in $dirs){
+            $p=Join-Path $d ('.writetest_'+[guid]::NewGuid().ToString('N'))
+            [IO.File]::WriteAllText($p,'test')
+            [IO.File]::Delete($p)
+          }
+          $env:APPDATA=Join-Path $root 'Data/Roaming'
+          $env:LOCALAPPDATA=Join-Path $root 'Data/Local'
+          $env:TEMP=Join-Path $root 'Data/Temp'
+          $env:TMP=$env:TEMP
+          $p=Start-Process -FilePath (Join-Path $app 'BaiduNetdisk.exe') -WorkingDirectory $app -PassThru
+          Start-Sleep -Seconds 20
+          $p.Refresh()
+          if($p.HasExited){throw "Main process exited early $($p.ExitCode)"}
+          $child=@(Get-CimInstance Win32_Process -Filter "Name='BaiduNetdiskUnite.exe'" | Where-Object{$_.ParentProcessId -eq $p.Id})
+          Write-Output "BROWSER_ENGINE_CHILDREN=$($child.Count)"
+          if($child.Count -eq 0){throw 'Browser engine not started'}
+          Write-Output 'V2_STARTUP_OK'
+          Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'Baidu|Yun|Netdisk'} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}
+      - name: Publish single portable ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaiduNetdisk-8.9.2.101-Portable-v2-Fixed
+          path: portable/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
