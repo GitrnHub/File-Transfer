@@ -1,0 +1,85 @@
+name: BaiduNetdisk Portable Startup Probe
+on:
+  push:
+    paths:
+      - .github/workflows/bdn-portable-probe.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download original verified installer from successful transfer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path payload -Force | Out-Null
+          gh run download 39484634746 --repo "$env:GITHUB_REPOSITORY" --name file-transfer-17 --dir payload
+          $p = "payload/BaiduNetdisk_8.9.2.101.exe"
+          if (!(Test-Path $p)) { throw "Source installer not found" }
+          $expected = "3bb9c6066dee502e8852170ea57cf52b3134c96521dffb6ee3d13d0862fd4086"
+          $real = (Get-FileHash $p -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($real -ne $expected) { throw "Source checksum mismatch: $real" }
+          Write-Output "SOURCE_OK $real"
+      - name: Extract NSIS files without installing
+        shell: pwsh
+        run: |
+          $tool = "C:\Program Files\7-Zip\7z.exe"
+          if (!(Test-Path $tool)) { choco install 7zip.install -y --no-progress; $tool = "C:\Program Files\7-Zip\7z.exe" }
+          & $tool x "payload/BaiduNetdisk_8.9.2.101.exe" "-oportable/App" -y
+          if ($LASTEXITCODE -ne 0) { throw "NSIS extraction error $LASTEXITCODE" }
+          if (!(Test-Path "portable/App/BaiduNetdisk.exe")) { throw "Main EXE missing" }
+      - name: Strip installers and requested optional components
+        shell: pwsh
+        run: |
+          $root = "portable/App"
+          @("module/ImageViewer","module/AiEngine","sysres","AutoUpdate",'$PLUGINSDIR') | ForEach-Object {
+            Remove-Item (Join-Path $root $_) -Force -Recurse -ErrorAction SilentlyContinue
+          }
+          @("netdisk-chrome-ext.crx","npYunWebDetect.dll","ServiceAssistans.exe","YunDetectService.exe","YunUtilityService.exe",
+            "kernelUpdate.exe","uninst.exe","BaiduNetdiskService.Msixbundle") | ForEach-Object {
+            Remove-Item (Join-Path $root $_) -Force -ErrorAction SilentlyContinue
+          }
+          @("YunShellExt*.dll","YunOfficeAddin*.dll","ShellFolder*.dll","ShellFolder*.exe",
+            "SystemFeatureSDK*.dll","Microsoft.*.Appx") | ForEach-Object {
+            Get-ChildItem $root -File -Filter $_ -ErrorAction SilentlyContinue | Remove-Item -Force
+          }
+          if (!(Test-Path "$root/updateagent.dll")) { throw "updateagent.dll required for main exe startup" }
+          if (Test-Path "$root/module/ImageViewer") { throw "ImageViewer not removed" }
+          if (Test-Path "$root/module/AiEngine") { throw "AiEngine not removed" }
+          New-Item -ItemType Directory -Path "portable/Data/Profile","portable/Data/Roaming","portable/Data/Local","portable/Data/Temp" -Force | Out-Null
+          Write-Output "PORTABLE_STATIC_CHECK_OK"
+      - name: Probe launch as executable, no installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = (Resolve-Path "portable").Path
+          $env:USERPROFILE = "$root\Data\Profile"
+          $env:APPDATA = "$root\Data\Roaming"
+          $env:LOCALAPPDATA = "$root\Data\Local"
+          $env:TEMP = "$root\Data\Temp"
+          $env:TMP = "$root\Data\Temp"
+          $env:HOME = "$root\Data\Profile"
+          $app = (Resolve-Path "portable/App/BaiduNetdisk.exe").Path
+          $before = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue | ConvertTo-Json -Depth 2 -Compress)
+          Write-Output "BEFORE_RUNKEY $before"
+          Write-Output "START_MAIN $app"
+          try {
+            $proc = Start-Process -FilePath $app -WorkingDirectory (Split-Path $app -Parent) -PassThru -ErrorAction Stop
+            Write-Output "MAIN_PID $($proc.Id)"
+            Start-Sleep -Seconds 13
+            $proc.Refresh()
+            Write-Output "MAIN_STILL_RUNNING $(-not $proc.HasExited)"
+            if ($proc.HasExited) { Write-Output "MAIN_EXIT_CODE $($proc.ExitCode)" }
+          } catch { Write-Output "START_ERROR $($_.Exception.Message)" }
+          Write-Output "CHILD_PROCESSES:"
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'BaiduNetdisk|baidunetdisk|Yun' } | Select-Object Name,ProcessId,ParentProcessId,ExecutablePath | Format-Table -AutoSize | Out-String | Write-Output
+          $after = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue | ConvertTo-Json -Depth 2 -Compress)
+          Write-Output "AFTER_RUNKEY $after"
+          Write-Output "FOLDERS_CREATED:"
+          Get-ChildItem "$root\Data" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 30 -ExpandProperty FullName | Write-Output
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'BaiduNetdisk|baidunetdisk|Yun' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Write-Output "PROBE_FINISHED"
