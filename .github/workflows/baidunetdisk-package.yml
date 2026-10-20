@@ -1,0 +1,69 @@
+name: Package verified BaiduNetdisk
+on:
+  push:
+    paths:
+      - .github/workflows/baidunetdisk-package.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Retrieve successfully verified EXE from previous Action
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p payload
+          gh run download 39484634746 --repo "$GITHUB_REPOSITORY" --name file-transfer-17 --dir payload
+          echo '3bb9c6066dee502e8852170ea57cf52b3134c96521dffb6ee3d13d0862fd4086  payload/BaiduNetdisk_8.9.2.101.exe' | sha256sum -c -
+          ls -lh payload/BaiduNetdisk_8.9.2.101.exe
+      - name: Repackage with strong compression; split only if necessary
+        id: pack
+        run: |
+          set -euo pipefail
+          command -v 7z >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full; }
+          mkdir -p out/single out/parts
+          archive='out/BaiduNetdisk_8.9.2.101.7z'
+          7z a -t7z -mx=7 -mmt=2 -md=64m "$archive" payload/BaiduNetdisk_8.9.2.101.exe >/dev/null
+          bytes=$(stat -c%s "$archive")
+          echo "Compressed archive size: $bytes bytes"
+          if [ "$bytes" -le 524288000 ]; then
+            mv "$archive" out/single/
+            echo 'format=single' >> "$GITHUB_OUTPUT"
+          else
+            split -b 300m -d -a 3 --numeric-suffixes=1 "$archive" out/parts/BaiduNetdisk_8.9.2.101.7z.
+            echo 'format=multipart' >> "$GITHUB_OUTPUT"
+          fi
+          ls -lhR out
+      - name: Upload single archive
+        if: steps.pack.outputs.format == 'single'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaiduNetdisk-8.9.2.101-single
+          path: out/single/
+          retention-days: 1
+          compression-level: 0
+      - name: Upload archive part 1
+        if: steps.pack.outputs.format == 'multipart'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaiduNetdisk-8.9.2.101-part1
+          path: out/parts/BaiduNetdisk_8.9.2.101.7z.001
+          retention-days: 1
+          compression-level: 0
+      - name: Upload archive part 2
+        if: steps.pack.outputs.format == 'multipart'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BaiduNetdisk-8.9.2.101-part2
+          path: out/parts/BaiduNetdisk_8.9.2.101.7z.002
+          retention-days: 1
+          compression-level: 0
+      - name: Write provenance note
+        if: always()
+        run: |
+          echo 'Source: verified artifact from workflow run 39484634746; original EXE SHA-256 3bb9c6066dee502e8852170ea57cf52b3134c96521dffb6ee3d13d0862fd4086' >> "$GITHUB_STEP_SUMMARY"
