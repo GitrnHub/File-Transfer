@@ -119,7 +119,7 @@ jobs:
           $manifest=Get-Content portable/Manifest.json -Encoding UTF8 -Raw | ConvertFrom-Json
           $known=@{}
           foreach($record in $manifest.files){
-            $rel=$record.path.Replace('/','\\').ToLowerInvariant()
+            $rel=$record.path.Replace('/',[IO.Path]::DirectorySeparatorChar).ToLowerInvariant()
             $known[$rel]=$true
             $target=Join-Path $base $record.path
             if(!(Test-Path -LiteralPath $target)){throw "Missing original: $target"}
