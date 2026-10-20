@@ -15,7 +15,7 @@ jobs:
       - name: Fetch previously downloaded official installer and verify SHA256
         shell: pwsh
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Path payload -Force | Out-Null
           gh run download 39484634746 --repo "$env:GITHUB_REPOSITORY" --name file-transfer-17 --dir payload
