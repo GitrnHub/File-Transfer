@@ -1,0 +1,27 @@
+name: PikPak Safe Bandwidth Probe
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: pikpak-safe-bandwidth
+  cancel-in-progress: false
+jobs:
+  probe:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      startsWith(github.event.issue.title, '[pikpak-bench]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Measure PikPak CDN transfer without publishing private URLs
+        run: node scripts/pikpak-secure-throughput.mjs
