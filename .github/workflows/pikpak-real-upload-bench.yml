@@ -56,7 +56,22 @@ jobs:
             set -e
             echo "CLI_TOKEN_SAVE_RC=$save_rc"
             echo "CLI_SAVED_TOKEN_LIST_RC=$saved_ls_rc"
-            if [ "$saved_ls_rc" -ne 0 ]; then echo 'CLI_AUTHENTICATION_FOR_LIST_FAILED'; exit 3; fi
+            if [ "$saved_ls_rc" -ne 0 ]; then
+              set +e
+              pikpak -v -F json ls >/tmp/pikpak-verbose.log 2>&1
+              set -e
+              python3 - <<'PY'
+          import re
+          for name in ('auth-status','auth-list','cli-saved-list','pikpak-verbose'):
+              txt=open('/tmp/'+name+'.log',errors='replace').read()
+              txt=re.sub(r'https?://\S+','[URL]',txt)
+              txt=re.sub(r'[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+','[EMAIL]',txt)
+              txt=re.sub(r'[A-Za-z0-9_=/+.-]{28,}','[REDACTED]',txt)
+              print('SANITIZED_CLI_ERROR_'+name.upper().replace('-','_')+'='+repr(txt[:350]))
+          PY
+              echo 'CLI_AUTHENTICATION_FOR_LIST_FAILED'
+              exit 3
+            fi
           fi
           echo 'CLI_AUTH_STATUS=OK'
           name="ChatGPT_upload_bench_${GITHUB_RUN_ID}"
