@@ -25,4 +25,7 @@ jobs:
           pikpak auth --help | head -n 100
           pikpak auth token --help | head -n 85
           pikpak upload --help | head -n 110
+          pikpak mkdir --help | head -n 95
+          pikpak ls --help | head -n 95
+          pikpak rm --help | head -n 95
 
