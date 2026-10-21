@@ -1,0 +1,67 @@
+name: PikPak GitHub Upload Benchmark
+on:
+  push:
+    paths:
+      - .github/workflows/pikpak-real-upload-bench.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install official CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --connect-timeout 15 --max-time 40 https://download.mypikpak.com/cli/install.sh -o /tmp/pikpak-install.sh
+          echo '16ad07072c08398acf113272cddbaf86c7a08a0c78b09da14c84cbd96da905a5  /tmp/pikpak-install.sh' | sha256sum -c -
+          timeout 120 bash /tmp/pikpak-install.sh >/dev/null
+          "$HOME/.local/bin/pikpak" --version
+      - name: Upload random samples to PikPak and clean up
+        shell: bash
+        env:
+          PIKPAK_TOKEN: ${{ secrets.PIKPAK_PAT }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          [ -n "${PIKPAK_TOKEN:-}" ] || { echo 'PAT_MISSING'; exit 2; }
+          if [[ "$PIKPAK_TOKEN" == "Bearer "* ]]; then export PIKPAK_TOKEN="${PIKPAK_TOKEN#Bearer }"; fi
+          if pikpak -F json auth status >/dev/null 2>&1; then echo 'CLI_AUTH_STATUS=OK'; else echo 'CLI_AUTH_STATUS=FAILED'; exit 3; fi
+          name="ChatGPT_upload_bench_${GITHUB_RUN_ID}"
+          folder=""
+          cleanup() {
+            if [ -n "$folder" ]; then
+              if pikpak rm "$folder" >/dev/null 2>&1; then echo 'BENCH_FOLDER_CLEANUP=SUCCESS'; else echo 'BENCH_FOLDER_CLEANUP=FAILED'; fi
+            fi
+          }
+          trap cleanup EXIT
+          pikpak -F json mkdir "$name" >/tmp/pikpak-mkdir.json 2>/tmp/pikpak-mkdir.err
+          folder="$(jq -r '.id // .file.id // .data.id // .result.id // empty' /tmp/pikpak-mkdir.json)"
+          if [ -z "$folder" ]; then echo 'BENCH_FOLDER_ID_MISSING'; exit 4; fi
+          echo 'BENCH_FOLDER_CREATED=TRUE'
+          for spec in '32 1' '96 3'; do
+            read -r size parallel <<< "$spec"
+            file="/tmp/pp_probe_${GITHUB_RUN_ID}_${size}.bin"
+            dd if=/dev/urandom of="$file" bs=1M count="$size" status=none
+            bytes="$(stat -c %s "$file")"
+            start="$(date +%s%N)"
+            set +e
+            timeout 300 pikpak -F json upload "$file" --name "gha_probe_${GITHUB_RUN_ID}_${size}.bin" --parent "$folder" --parallel "$parallel" --part-size 6MB --watch >/tmp/pikpak-upload-${size}.log 2>&1
+            result=$?
+            set -e
+            end="$(date +%s%N)"
+            echo "BENCH_UPLOADER_EXIT_${size}=$result"
+            python3 - "$bytes" "$size" "$parallel" "$start" "$end" "$result" <<'PY'
+          import sys,json
+          n,size,parallel,t1,t2,code=map(int,sys.argv[1:])
+          seconds=(t2-t1)/1e9
+          print('PIKPAK_UPLOAD_BENCH_RESULT='+json.dumps({'sample_mib':size,'bytes':n,'parallel':parallel,'elapsed_seconds':round(seconds,3),'mib_per_s':round(n/1048576/seconds,3),'mb_per_s':round(n/1e6/seconds,3),'success':code==0},ensure_ascii=False))
+          PY
+            rm -f "$file"
+            if [ "$result" -ne 0 ]; then echo 'UPLOAD_FAILED_NO_RATE_VALID'; exit "$result"; fi
+          done
+          pikpak -F json ls "$folder" >/tmp/pikpak-verify.json
+          echo 'VERIFY_REMOTE_CONTENTS:'
+          jq -c '[.files[]? | {name,size,kind}]' /tmp/pikpak-verify.json
