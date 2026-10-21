@@ -23,4 +23,6 @@ jobs:
           pikpak --version || true
           pikpak --help | head -n 110
           pikpak auth --help | head -n 100
+          pikpak auth token --help | head -n 85
           pikpak upload --help | head -n 110
+
