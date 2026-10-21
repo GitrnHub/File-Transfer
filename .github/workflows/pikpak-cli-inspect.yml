@@ -1,0 +1,20 @@
+name: PikPak CLI Inspection
+on:
+  push:
+    paths:
+      - .github/workflows/pikpak-cli-inspect.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect official PikPak CLI installer (do not execute)
+        shell: bash
+        run: |
+          curl -fLsS --connect-timeout 15 --max-time 40 https://download.mypikpak.com/cli/install.sh -o /tmp/pikpak-install.sh
+          echo "INSTALL_SCRIPT_SIZE=$(wc -c </tmp/pikpak-install.sh)"
+          sha256sum /tmp/pikpak-install.sh
+          sed -n '1,160p' /tmp/pikpak-install.sh
