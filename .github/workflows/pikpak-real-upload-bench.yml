@@ -45,7 +45,19 @@ jobs:
               tags=[key for key in ('401','403','unauthorized','forbidden','invalid','expired','token','oauth','permission','bad_request','not logged','not authenticated','missing','error','panic','connection') if key in data]
               print('CLI_DIAGNOSTIC_'+name.upper().replace('-','_')+'='+','.join(tags))
           PY
-          if [ "$ls_rc" -ne 0 ]; then echo 'CLI_AUTHENTICATION_FOR_LIST_FAILED'; exit 3; fi
+          if [ "$ls_rc" -ne 0 ]; then
+            echo 'CLI_ENV_TOKEN_REJECTED_TRYING_CLI_SAVED_PAT'
+            set +e
+            pikpak auth token "$PIKPAK_TOKEN" >/tmp/pikpak-save-token.log 2>&1
+            save_rc=$?
+            unset PIKPAK_TOKEN
+            pikpak -F json ls >/tmp/cli-saved-list.log 2>&1
+            saved_ls_rc=$?
+            set -e
+            echo "CLI_TOKEN_SAVE_RC=$save_rc"
+            echo "CLI_SAVED_TOKEN_LIST_RC=$saved_ls_rc"
+            if [ "$saved_ls_rc" -ne 0 ]; then echo 'CLI_AUTHENTICATION_FOR_LIST_FAILED'; exit 3; fi
+          fi
           echo 'CLI_AUTH_STATUS=OK'
           name="ChatGPT_upload_bench_${GITHUB_RUN_ID}"
           folder=""
