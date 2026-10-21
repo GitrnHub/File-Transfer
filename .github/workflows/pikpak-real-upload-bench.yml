@@ -28,7 +28,25 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           [ -n "${PIKPAK_TOKEN:-}" ] || { echo 'PAT_MISSING'; exit 2; }
           if [[ "$PIKPAK_TOKEN" == "Bearer "* ]]; then export PIKPAK_TOKEN="${PIKPAK_TOKEN#Bearer }"; fi
-          if pikpak -F json auth status >/dev/null 2>&1; then echo 'CLI_AUTH_STATUS=OK'; else echo 'CLI_AUTH_STATUS=FAILED'; exit 3; fi
+          PIKPAK_TOKEN="$(printf '%s' "$PIKPAK_TOKEN" | tr -d '\\r\\n')" 
+          export PIKPAK_TOKEN
+          set +e
+          pikpak -F json auth status > /tmp/auth-status.log 2>&1
+          auth_rc=$?
+          pikpak -F json ls > /tmp/auth-list.log 2>&1
+          ls_rc=$?
+          set -e
+          echo "CLI_AUTH_STATUS_RC=$auth_rc"
+          echo "CLI_LIST_ROOT_RC=$ls_rc"
+          python3 - <<'PY'
+          import re
+          for name in ('auth-status','auth-list'):
+              data=open('/tmp/'+name+'.log',errors='replace').read().lower()
+              tags=[key for key in ('401','403','unauthorized','forbidden','invalid','expired','token','oauth','permission','bad_request','not logged','not authenticated','missing','error','panic','connection') if key in data]
+              print('CLI_DIAGNOSTIC_'+name.upper().replace('-','_')+'='+','.join(tags))
+          PY
+          if [ "$ls_rc" -ne 0 ]; then echo 'CLI_AUTHENTICATION_FOR_LIST_FAILED'; exit 3; fi
+          echo 'CLI_AUTH_STATUS=OK'
           name="ChatGPT_upload_bench_${GITHUB_RUN_ID}"
           folder=""
           cleanup() {
