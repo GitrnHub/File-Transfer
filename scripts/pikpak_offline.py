@@ -86,6 +86,58 @@ def get_json(path, pat, method="GET", data=None):
     except URLError:
         raise RuntimeError("pikpak_network_error") from None
 
+def check_existing_status(raw_issue, pat):
+    import re
+    try:
+        marker = "PIKPAK_STATUS_REQUEST_V1\n"
+        ids = json.loads(raw_issue[len(marker):])["infohashes"]
+        if not isinstance(ids, list) or not (1 <= len(ids) <= 4):
+            raise ValueError()
+        ids = [str(i).lower() for i in ids]
+        if not all(re.fullmatch(r"[0-9a-f]{40}", i) for i in ids):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        publish("blocked", reason="invalid_status_request")
+        return
+
+    try:
+        query = urllib.parse.urlencode({
+            "type": "offline", "limit": "500", "page_token": "",
+            "thumbnail_size": "SIZE_SMALL",
+            "filters": json.dumps({
+                "phase": {"in": "PHASE_TYPE_RUNNING,PHASE_TYPE_COMPLETE,PHASE_TYPE_ERROR,PHASE_TYPE_PENDING"}
+            }, separators=(",", ":")),
+        })
+        response = get_json("/drive/v1/tasks?" + query, pat)
+        tasks = response.get("tasks") or []
+        results = []
+        for btih in ids:
+            matches = []
+            for task in tasks:
+                params = task.get("params") or {}
+                source_url = str(params.get("url") or "")
+                if btih in source_url.lower():
+                    matches.append(task)
+            if not matches:
+                results.append({"infohash": btih, "status": "not_found_in_first_page"})
+                continue
+            task = matches[0]
+            phase = str(task.get("phase") or "UNKNOWN")
+            progress = task.get("progress")
+            item = {"infohash": btih, "phase": phase, "progress": progress}
+            if phase == "PHASE_TYPE_COMPLETE":
+                file_id = str(task.get("file_id") or "")
+                if file_id:
+                    try:
+                        file_info = get_json("/drive/v1/files/" + urllib.parse.quote(file_id, safe=""), pat)
+                        item["cloud_file_exists"] = bool(file_info.get("id")) and not bool(file_info.get("trashed"))
+                    except RuntimeError:
+                        item["cloud_file_exists"] = "unverified"
+            results.append(item)
+        publish("status_check", results=results)
+    except RuntimeError as err:
+        publish("failed", reason=str(err))
+
 def main():
     pat = os.environ.get("PIKPAK_PAT", "")
     if not pat:
@@ -93,6 +145,9 @@ def main():
         return
 
     raw_issue = os.environ.get("ISSUE_BODY", "")
+    if raw_issue.startswith("PIKPAK_STATUS_REQUEST_V1\n"):
+        check_existing_status(raw_issue, pat)
+        return
     url = os.environ.get("INPUT_TORRENT_URL", "").strip()
     if raw_issue:
         try:
