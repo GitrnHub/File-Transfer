@@ -111,12 +111,22 @@ def main():
         return
 
     try:
-        with urllib.request.urlopen(url, timeout=20) as resp:
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 File-Transfer/1.0",
+            "Accept": "*/*",
+        })
+        with urllib.request.urlopen(request, timeout=45) as resp:
             torrent = resp.read(256 * 1024 + 1)
         btih = infohash_from_torrent(torrent)
         magnet = "magnet:?xt=urn:btih:" + btih
+    except HTTPError as err:
+        publish("blocked", reason="torrent_http_" + str(err.code))
+        return
+    except ValueError as err:
+        publish("blocked", reason=str(err))
+        return
     except Exception:
-        publish("blocked", reason="torrent_metadata_unavailable_or_invalid")
+        publish("blocked", reason="torrent_metadata_network_or_parse_error")
         return
 
     try:
