@@ -1,0 +1,54 @@
+
+name: PikPak Offline Import
+run-name: PikPak offline import ${{ github.event.issue.number || 'manual' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      torrent_url:
+        description: Public Internet Archive .torrent URL
+        required: true
+        type: string
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pikpak-offline
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' &&
+       github.event.issue.user.login == github.repository_owner &&
+       startsWith(github.event.issue.title, '[pikpak]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout scripts (no persisted credentials)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Submit magnet to PikPak cloud (no BT client)
+        env:
+          PIKPAK_PAT: ${{ secrets.PIKPAK_PAT }}
+          ISSUE_BODY: ${{ github.event.issue.body || '' }}
+          INPUT_TORRENT_URL: ${{ inputs.torrent_url || '' }}
+        run: python3 scripts/pikpak_offline.py
+      - name: Report sanitized result
+        if: always() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ -f pikpak_result.txt ]; then
+            gh issue comment "$ISSUE_NUMBER" --body-file pikpak_result.txt
+          else
+            gh issue comment "$ISSUE_NUMBER" --body 'PIKPAK_RESULT_V1
+          {"status":"failed","reason":"workflow_script_failed_before_reporting"}'
+          fi
