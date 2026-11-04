@@ -1,0 +1,142 @@
+name: Raco ModelOpt ONNX Conversion
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_path:
+        description: Absolute path to folded_noshapes ONNX on the self-hosted Windows runner
+        required: true
+        type: string
+      calibration_root:
+        description: Absolute directory containing pairs.csv and calibration images
+        required: true
+        type: string
+      output_root:
+        description: Absolute output directory on the self-hosted runner
+        required: true
+        type: string
+      conda_exe:
+        description: Absolute path to conda.exe
+        required: true
+        type: string
+      conda_env:
+        description: Existing conda environment name
+        required: true
+        default: Runner
+        type: string
+      resolutions:
+        description: Comma-separated calibration sizes
+        required: true
+        default: "512,1024"
+        type: string
+      max_pairs:
+        description: Maximum number of calibration image pairs
+        required: true
+        default: "24"
+        type: string
+      calibration_ep:
+        description: ONNX Runtime calibration execution provider
+        required: true
+        default: "cuda:0"
+        type: choice
+        options: ["cuda:0", "cpu"]
+      color_order:
+        description: Match original Raco preprocessing
+        required: true
+        default: "RGB"
+        type: choice
+        options: ["RGB", "BGR"]
+      pixel_divisor:
+        description: Input pixel divisor, normally 255.0
+        required: true
+        default: "255.0"
+        type: string
+      mean:
+        description: Optional RGB mean triplet, blank means none
+        required: false
+        default: ""
+        type: string
+      std:
+        description: Optional RGB std triplet, blank means none
+        required: false
+        default: ""
+        type: string
+      publish_artifact:
+        description: Upload ONNX ZIP as public-repository Actions artifact (readers can download it)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raco-modelopt-conversion
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: [self-hosted, Windows, X64, gpu]
+    timeout-minutes: 360
+    steps:
+      - name: Checkout conversion scripts
+        uses: actions/checkout@v4
+        with:
+          ref: modelopt-onnx-conversion
+          persist-credentials: false
+
+      - name: Run ModelOpt conversion in existing Runner environment
+        shell: cmd
+        env:
+          MODEL_OPT_CONDA_EXE: \${{ inputs.conda_exe }}
+          MODEL_OPT_CONDA_ENV: \${{ inputs.conda_env }}
+          MODEL_OPT_MODEL_PATH: \${{ inputs.model_path }}
+          MODEL_OPT_CALIBRATION_ROOT: \${{ inputs.calibration_root }}
+          MODEL_OPT_OUTPUT_ROOT: \${{ inputs.output_root }}
+          MODEL_OPT_RESOLUTIONS: \${{ inputs.resolutions }}
+          MODEL_OPT_MAX_PAIRS: \${{ inputs.max_pairs }}
+          MODEL_OPT_CALIBRATION_EP: \${{ inputs.calibration_ep }}
+          MODEL_OPT_COLOR_ORDER: \${{ inputs.color_order }}
+          MODEL_OPT_PIXEL_DIVISOR: \${{ inputs.pixel_divisor }}
+          MODEL_OPT_MEAN: \${{ inputs.mean }}
+          MODEL_OPT_STD: \${{ inputs.std }}
+          MODEL_OPT_INSTALL_IF_MISSING: "false"
+        run: scripts\run_modelopt_windows.cmd
+
+      - name: Locate generated package
+        id: package
+        shell: pwsh
+        env:
+          OUTPUT_ROOT: \${{ inputs.output_root }}
+        run: |
+          $package = Get-ChildItem -LiteralPath $env:OUTPUT_ROOT -Filter "raco_modelopt_variants_*.zip" -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $package) { throw "No ModelOpt package was generated." }
+          "package_path=$($package.FullName)" >> $env:GITHUB_OUTPUT
+          "package_name=$($package.Name)" >> $env:GITHUB_OUTPUT
+          "package_size=$($package.Length)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload package as Actions artifact
+        if: \${{ inputs.publish_artifact }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-onnx-\${{ github.run_id }}
+          path: \${{ steps.package.outputs.package_path }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Write workflow summary
+        if: always()
+        shell: pwsh
+        env:
+          PACKAGE_NAME: \${{ steps.package.outputs.package_name }}
+          PACKAGE_SIZE: \${{ steps.package.outputs.package_size }}
+          PUBLISH_ARTIFACT: \${{ inputs.publish_artifact }}
+        run: |
+          "## Raco ModelOpt ONNX conversion" >> $env:GITHUB_STEP_SUMMARY
+          "- Package: $env:PACKAGE_NAME" >> $env:GITHUB_STEP_SUMMARY
+          "- Size bytes: $env:PACKAGE_SIZE" >> $env:GITHUB_STEP_SUMMARY
+          "- Public Actions artifact upload enabled: $env:PUBLISH_ARTIFACT" >> $env:GITHUB_STEP_SUMMARY
+          "Source ONNX and calibration images remain on the self-hosted runner." >> $env:GITHUB_STEP_SUMMARY
