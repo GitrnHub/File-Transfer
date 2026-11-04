@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Create FP16 mixed-precision and FP8+FP16 ONNX variants for Raco ALIKED+LightGlue.
 
-Runs on the user's Windows self-hosted GitHub Actions runner in the Runner conda
-environment. The source ONNX and calibration images are never copied into Git
-or the output ZIP.
+Runs on a standard GitHub-hosted Linux CPU runner. CPUExecutionProvider performs
+FP16 analysis and FP8 calibration; no NVIDIA GPU is required. The source ONNX and
+calibration images are never copied into Git or the output ZIP.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from modelopt.onnx.autocast import convert_to_mixed_precision
 from modelopt.onnx.quantization import quantize as modelopt_quantize
 from modelopt.onnx.quantization.calib_utils import CalibrationDataProvider
 
-SUPPORTED_FP8_OPS = ["Conv", "Gemm", "MatMul", "Add"]
+SUPPORTED_FP8_OPS = ["Conv", "Gemm", "MatMul"]
 SENSITIVE_FP16_OPS = ["ReduceL2", "Softmax", "LayerNormalization", "Div", "Sqrt"]
 
 
@@ -269,7 +269,7 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--max-pairs", type=int, default=24)
     parser.add_argument("--resolutions", default="512,1024")
-    parser.add_argument("--calibration-ep", choices=["cuda:0", "cpu"], default="cpu")
+    parser.add_argument("--calibration-ep", choices=["cpu"], default="cpu")
     parser.add_argument("--color-order", choices=["RGB", "BGR"], default="RGB")
     parser.add_argument("--pixel-divisor", type=float, default=255.0)
     parser.add_argument("--mean", default="")
@@ -292,13 +292,8 @@ def main() -> int:
     if std is not None and any(x == 0 for x in std):
         raise ValueError("std values must be non-zero")
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("PyTorch cannot access the NVIDIA GPU in the Runner environment")
-    if args.calibration_ep == "cuda:0" and "CUDAExecutionProvider" not in ort.get_available_providers():
-        raise RuntimeError(
-            "ONNX Runtime CUDAExecutionProvider is unavailable. Install the CUDA 12-compatible "
-            "onnxruntime-gpu package or rerun with --calibration-ep cpu."
-        )
+    if "CPUExecutionProvider" not in ort.get_available_providers():
+        raise RuntimeError("ONNX Runtime CPUExecutionProvider is unavailable.")
 
     model_meta = inspect_model(model_path)
     if len(model_meta["input"]) != 1 or model_meta["input"][0]["name"] != "images":
@@ -325,7 +320,7 @@ def main() -> int:
     print("ModelOpt:", modelopt_version)
     print("Python:", sys.version.split()[0])
     print("PyTorch:", torch.__version__, "CUDA:", torch.version.cuda)
-    print("GPU:", torch.cuda.get_device_name(0))
+    print("Execution device: GitHub-hosted CPU runner")
     print("ONNX Runtime:", ort.__version__, "providers:", ort.get_available_providers())
     print("Calibration pairs:", len(pairs), "sizes:", sizes, "EP:", args.calibration_ep)
     print("Preprocessing:", args.color_order, "pixel_divisor:", args.pixel_divisor, "mean:", mean, "std:", std)
@@ -404,12 +399,12 @@ def main() -> int:
                         high_precision_dtype="fp16",
                         mha_accumulation_dtype=mha_value,
                         direct_io_types=False,
-                        opset=21,
+                        opset=model_meta["opset"],
                         keep_intermediate_files=False,
                         use_external_data_format=False,
                         output_path=str(out),
                         log_level="INFO",
-                        log_file=str(log_path),
+                        log_file=str(log_path.with_name(log_path.stem + "_quant.log")),
                     )
 
                 run_variant(name, "fp8", output_path, log_path, convert_fp8, manifest_rows)
@@ -448,8 +443,8 @@ def main() -> int:
         "variants": manifest_rows,
         "important": [
             "FP16 AutoCast variants are calibrated with supplied image pairs and keep FP32 model I/O.",
-            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, and ONNX opset 21.",
-            "FP8 supported op types selected here: Conv, Gemm, MatMul, Add.",
+            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, and preserve source opset.",
+            "FP8 supported op types selected here: Conv, Gemm, MatMul.",
             "The source ONNX and calibration images are not included in the package.",
             "Preprocessing must match the original Raco pipeline; defaults are RGB and float32 / 255 with no mean/std.",
         ],
@@ -464,7 +459,7 @@ def main() -> int:
         f"Source: {model_path.name}",
         f"Source SHA256: {manifest['source_model_sha256']}",
         f"ModelOpt: {modelopt_version}",
-        f"GPU: {torch.cuda.get_device_name(0)}",
+        "Execution device: GitHub-hosted CPU runner",
         f"Calibration pairs: {len(pairs)}",
         f"Calibration resolutions: {sizes}",
         f"Calibration EP: {args.calibration_ep}",
@@ -504,7 +499,7 @@ def main() -> int:
             summary.write("## Raco ModelOpt ONNX conversion\n\n")
             summary.write(f"- Source: {model_path.name}\n")
             summary.write(f"- ModelOpt: {modelopt_version}\n")
-            summary.write(f"- GPU: {torch.cuda.get_device_name(0)}\n")
+            summary.write("- Execution device: GitHub-hosted CPU runner\n")
             summary.write(f"- Calibration pairs: {len(pairs)}\n")
             summary.write(f"- Resolutions: {sizes}\n")
             summary.write(f"- Calibration EP: {args.calibration_ep}\n")
