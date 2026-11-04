@@ -63,7 +63,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile scripts/modelopt_convert_raco_onnx.py scripts/generate_raco_synthetic_pairs.py
+          python -m py_compile scripts/modelopt_convert_raco_onnx.py scripts/generate_raco_synthetic_pairs.py scripts/smoke_test_modelopt_cpu.py
+          python scripts/smoke_test_modelopt_cpu.py
           python - <<'PY'
           import torch
           import onnx
@@ -106,13 +107,24 @@ jobs:
       - name: Download the exact Library ONNX and verify its SHA256
         shell: bash
         env:
-          MODEL_URL: ${{ inputs.model_url }}
           MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
         run: |
           set -euo pipefail
+          MODEL_URL="$(python - <<'PY'
+          import json, os
+          with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+              event = json.load(f)
+          print((event.get("inputs") or {}).get("model_url", ""))
+          PY
+          )"
+          if [[ -z "$MODEL_URL" ]]; then
+            echo "::error::workflow_dispatch input model_url is empty"
+            exit 2
+          fi
           echo "::add-mask::$MODEL_URL"
           curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 30 \
             "$MODEL_URL" --output "$MODEL_PATH"
+          unset MODEL_URL
           ACTUAL_SHA256="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
           echo "Downloaded ONNX size: $(stat -c%s "$MODEL_PATH") bytes"
           echo "Expected SHA256: $EXPECTED_MODEL_SHA256"
