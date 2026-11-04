@@ -115,8 +115,11 @@ jobs:
           with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               event = json.load(f)
           raw = str((event.get("inputs") or {}).get("model_url", "")).strip()
-          raw = raw.strip('"').strip("'").strip("“”‘’<>")
-          raw = raw.replace(r"\\/", "/").replace(r"\\:", ":")
+          raw = raw.replace(r"\(", "(").replace(r"\)", ")")
+          raw = raw.replace(r"\/", "/").replace(r"\:", ":")
+          if "](" in raw and raw.endswith(")"):
+              raw = raw.split("](", 1)[1][:-1]
+          raw = raw.strip().strip('"').strip("'").strip("“”‘’<>")
           print(raw)
           PY
           )"
