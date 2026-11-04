@@ -1,12 +1,6 @@
 name: Raco ModelOpt ONNX Conversion (Google Drive source)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/raco-modelopt-drive.yml
-      - scripts/modelopt_convert_raco_onnx.py
-      - scripts/generate_raco_synthetic_pairs.py
   workflow_dispatch:
 
 permissions:
