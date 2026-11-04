@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           python scripts/generate_raco_synthetic_pairs.py \
             --output "$CALIBRATION_ROOT" \
-            --pairs 12 \
+            --pairs 3 \
             --size 1024 \
             --seed 20261104
 
@@ -121,7 +121,7 @@ jobs:
             --model "$MODEL_PATH" \
             --calibration-root "$CALIBRATION_ROOT" \
             --output-root "$OUTPUT_ROOT" \
-            --max-pairs 12 \
+            --max-pairs 3 \
             --resolutions 512,1024 \
             --calibration-ep cpu \
             --color-order RGB \
@@ -181,7 +181,7 @@ jobs:
             echo "- Source: Google Drive public file ID $MODEL_ID"
             echo "- Source size: $EXPECTED_MODEL_SIZE bytes"
             echo "- Source SHA256: $EXPECTED_MODEL_SHA256"
-            echo "- Calibration: 12 synthetic pairs at 512 and 1024"
+            echo "- Calibration: 3 synthetic pairs (easy/medium/hard) at 512 and 1024"
             echo "- Precision: FP16 AutoCast and FP8+FP16 Q/DQ"
             echo "- Output artifact retention: 7 days"
           } >> "$GITHUB_STEP_SUMMARY"
