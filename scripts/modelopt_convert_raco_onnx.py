@@ -302,6 +302,19 @@ def main() -> int:
     if len(pairs) < 1:
         raise ValueError("At least one calibration image pair is required")
 
+    # ModelOpt AutoCast's ReferenceRunner marks every graph tensor as an output
+    # and retains batch outputs while aggregating statistics. On this large
+    # ALIKED+LightGlue graph, multiple CPU calibration batches can exhaust the
+    # standard 16-GB GitHub-hosted runner. Keep the middle (medium-difficulty)
+    # pair for this first CPU conversion pass.
+    requested_pair_count = len(pairs)
+    if len(pairs) > 1:
+        pairs = [pairs[len(pairs) // 2]]
+    print(
+        f"Calibration memory cap: using {len(pairs)} representative pair "
+        f"out of {requested_pair_count} available"
+    )
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = output_root / f"run_{timestamp}"
     onnx_dir = run_dir / "onnx"
