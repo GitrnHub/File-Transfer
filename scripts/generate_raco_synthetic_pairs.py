@@ -79,8 +79,8 @@ def make_homography(rng: np.random.Generator, size: int, level: str) -> np.ndarr
 
 
 def generate(output: Path, pairs: int, size: int, seed: int, quality: int):
-    if pairs < 4:
-        raise ValueError("At least four pairs are required.")
+    if pairs < 3:
+        raise ValueError("At least three pairs (easy, medium, hard) are required.")
     if size < 512 or size % 32:
         raise ValueError("Size must be >=512 and divisible by 32.")
 
