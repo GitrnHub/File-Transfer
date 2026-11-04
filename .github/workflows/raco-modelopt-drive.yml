@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: raco-modelopt-drive
+  group: raco-modelopt-drive-cleanrun-20261105
   cancel-in-progress: true
 
 jobs:
