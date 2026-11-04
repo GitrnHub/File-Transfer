@@ -1,24 +1,32 @@
 name: Raco ModelOpt ONNX Conversion (Google Drive source)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/raco-modelopt-drive.yml
+      - scripts/modelopt_convert_raco_onnx.py
+      - scripts/generate_raco_synthetic_pairs.py
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: raco-modelopt-drive-cleanrun-20261105
-  cancel-in-progress: true
+  group: raco-modelopt-drive-singlebatch-20261105
+  cancel-in-progress: false
 
 jobs:
   convert:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      OMP_NUM_THREADS: "2"
-      MKL_NUM_THREADS: "2"
-      OPENBLAS_NUM_THREADS: "2"
-      ORT_NUM_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      ORT_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "1"
+      PYTHONUNBUFFERED: "1"
       MODEL_ID: "1bQvRw5k9-6um6ByCv7NKHKosmnl2KuVQ"
       EXPECTED_MODEL_SIZE: "50039973"
       EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
@@ -107,19 +115,54 @@ jobs:
             --size 512 \
             --seed 20261104
 
+      - name: Put medium-difficulty pair first for one-batch calibration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv, os
+          path = os.path.join(os.environ["CALIBRATION_ROOT"], "pairs.csv")
+          with open(path, newline="", encoding="utf-8-sig") as f:
+              rows = list(csv.DictReader(f))
+          order = {"medium": 0, "hard": 1, "easy": 2}
+          rows.sort(key=lambda row: order.get(row.get("difficulty", ""), 99))
+          with open(path, "w", newline="", encoding="utf-8-sig") as f:
+              writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+              writer.writeheader()
+              writer.writerows(rows)
+          print("Calibration order:", [r.get("difficulty") for r in rows])
+          PY
+
+      - name: Report available memory before ModelOpt
+        shell: bash
+        run: |
+          set -euo pipefail
+          free -h
+          echo "cgroup memory.max: $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unavailable)"
+          echo "cgroup memory.current: $(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo unavailable)"
+
       - name: Convert FP16 and FP8 mixed-precision variants
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/modelopt_convert_raco_onnx.py \
+          python -u scripts/modelopt_convert_raco_onnx.py \
             --model "$MODEL_PATH" \
             --calibration-root "$CALIBRATION_ROOT" \
             --output-root "$OUTPUT_ROOT" \
-            --max-pairs 3 \
+            --max-pairs 1 \
             --resolutions 512 \
             --calibration-ep cpu \
             --color-order RGB \
-            --pixel-divisor 255.0
+            --pixel-divisor 255.0 &
+          CONVERT_PID=$!
+          while kill -0 "$CONVERT_PID" 2>/dev/null; do
+            CURRENT="$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo unavailable)"
+            MAXIMUM="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unavailable)"
+            RSS="$(ps -o rss= -p "$CONVERT_PID" 2>/dev/null | tr -d ' ' || true)"
+            echo "[memory] cgroup_current_bytes=$CURRENT cgroup_max_bytes=$MAXIMUM python_rss_kb=${RSS:-unavailable}"
+            sleep 5
+          done
+          wait "$CONVERT_PID"
 
       - name: Require successful FP16 and FP8 variants
         shell: bash
@@ -175,7 +218,7 @@ jobs:
             echo "- Source: Google Drive public file ID $MODEL_ID"
             echo "- Source size: $EXPECTED_MODEL_SIZE bytes"
             echo "- Source SHA256: $EXPECTED_MODEL_SHA256"
-            echo "- Calibration: 3 synthetic pairs (easy/medium/hard) at 512 and 1024"
+            echo "- Calibration: 1 medium-difficulty synthetic pair (easy/medium/hard) at 512 and 1024"
             echo "- Precision: FP16 AutoCast and FP8+FP16 Q/DQ"
             echo "- Output artifact retention: 7 days"
           } >> "$GITHUB_STEP_SUMMARY"
