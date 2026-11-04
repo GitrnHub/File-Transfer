@@ -2,7 +2,7 @@ name: Raco ModelOpt ONNX Conversion (Google Drive source)
 
 on:
   issues:
-    types: [opened]
+    types: [opened, edited]
   workflow_dispatch:
 
 permissions:
