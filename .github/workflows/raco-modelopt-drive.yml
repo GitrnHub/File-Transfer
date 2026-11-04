@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: raco-modelopt-drive
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   convert:
