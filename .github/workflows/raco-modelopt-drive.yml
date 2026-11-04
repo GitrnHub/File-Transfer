@@ -1,0 +1,182 @@
+name: Raco ModelOpt ONNX Conversion (Google Drive source)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/raco-modelopt-drive.yml
+      - scripts/modelopt_convert_raco_onnx.py
+      - scripts/generate_raco_synthetic_pairs.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raco-modelopt-drive
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      ORT_NUM_THREADS: "4"
+      MODEL_ID: "1bQvRw5k9-6um6ByCv7NKHKosmnl2KuVQ"
+      EXPECTED_MODEL_SIZE: "50039973"
+      EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
+      MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
+      CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
+      OUTPUT_ROOT: ${{ runner.temp }}/raco_modelopt_output
+
+    steps:
+      - name: Checkout conversion tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download public ONNX from Google Drive
+        shell: bash
+        run: |
+          set -euo pipefail
+          DOWNLOAD_URL="https://drive.usercontent.google.com/download?id=$MODEL_ID&export=download&confirm=t"
+          echo "Downloading public source ONNX from Google Drive..."
+          HTTP_CODE="$(curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 4 --retry-delay 3 --connect-timeout 30 --max-time 900 \
+            --silent --show-error \
+            --output "$MODEL_PATH" --write-out '%{http_code}' "$DOWNLOAD_URL")"
+          echo "HTTP status: $HTTP_CODE"
+          test "$HTTP_CODE" = "200"
+          ACTUAL_SIZE="$(stat -c%s "$MODEL_PATH")"
+          ACTUAL_SHA256="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+          echo "Downloaded bytes: $ACTUAL_SIZE"
+          echo "Expected bytes:   $EXPECTED_MODEL_SIZE"
+          echo "Downloaded SHA256: $ACTUAL_SHA256"
+          echo "Expected SHA256:   $EXPECTED_MODEL_SHA256"
+          test "$ACTUAL_SIZE" = "$EXPECTED_MODEL_SIZE"
+          test "$ACTUAL_SHA256" = "$EXPECTED_MODEL_SHA256"
+
+      - name: Install CPU PyTorch and NVIDIA ModelOpt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+          python -m pip install "nvidia-modelopt[onnx]==0.48.0" opencv-python-headless
+
+      - name: Verify source ONNX and CPU ModelOpt runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import torch
+          import onnx
+          import onnxruntime as ort
+          from modelopt.onnx.autocast import convert_to_mixed_precision
+          from modelopt.onnx.quantization import quantize
+          model_path = os.environ["MODEL_PATH"]
+          model = onnx.load(model_path, load_external_data=True)
+          onnx.checker.check_model(model)
+          print("ONNX checker: PASS")
+          print("ONNX nodes:", len(model.graph.node))
+          print("ONNX opset:", max((x.version for x in model.opset_import if x.domain in ("", "ai.onnx")), default=0))
+          print("Torch:", torch.__version__, "CUDA available:", torch.cuda.is_available())
+          print("ONNX Runtime:", ort.__version__, "providers:", ort.get_available_providers())
+          assert not torch.cuda.is_available()
+          assert "CPUExecutionProvider" in ort.get_available_providers()
+          assert len(model.graph.node) > 1000
+          print("CPU ModelOpt environment: PASS")
+          PY
+          python -m pip check
+
+      - name: Generate representative synthetic calibration pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/generate_raco_synthetic_pairs.py \
+            --output "$CALIBRATION_ROOT" \
+            --pairs 12 \
+            --size 1024 \
+            --seed 20261104
+
+      - name: Convert FP16 and FP8 mixed-precision variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/modelopt_convert_raco_onnx.py \
+            --model "$MODEL_PATH" \
+            --calibration-root "$CALIBRATION_ROOT" \
+            --output-root "$OUTPUT_ROOT" \
+            --max-pairs 12 \
+            --resolutions 512,1024 \
+            --calibration-ep cpu \
+            --color-order RGB \
+            --pixel-divisor 255.0
+
+      - name: Require successful FP16 and FP8 variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, json, os, zipfile
+          root = os.environ["OUTPUT_ROOT"]
+          packages = sorted(glob.glob(os.path.join(root, "raco_modelopt_variants_*.zip")))
+          if not packages:
+              raise SystemExit("No ModelOpt ZIP package was produced")
+          with zipfile.ZipFile(packages[-1]) as archive:
+              manifest = json.loads(archive.read("manifest.json"))
+          fp16 = [x for x in manifest["variants"] if x["kind"] == "fp16" and x["status"] == "SUCCESS"]
+          fp8 = [x for x in manifest["variants"] if x["kind"] == "fp8" and x["status"] == "SUCCESS"]
+          print("FP16 successful:", len(fp16))
+          print("FP8 successful:", len(fp8))
+          for row in manifest["variants"]:
+              print(row["status"], row["name"], row.get("error", ""))
+          if not fp16:
+              raise SystemExit("No FP16 variant succeeded")
+          if not fp8:
+              raise SystemExit("No FP8 Q/DQ variant succeeded on the actual ALIKED+LightGlue model")
+          PY
+
+      - name: Upload ONNX variants ZIP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-onnx-${{ github.run_id }}
+          path: ${{ runner.temp }}/raco_modelopt_output/raco_modelopt_variants_*.zip
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload debug logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-debug-${{ github.run_id }}
+          path: ${{ runner.temp }}/raco_modelopt_output/**
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Write workflow summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Raco ModelOpt ONNX conversion"
+            echo "- Runner: GitHub-hosted Ubuntu CPU"
+            echo "- Source: Google Drive public file ID $MODEL_ID"
+            echo "- Source size: $EXPECTED_MODEL_SIZE bytes"
+            echo "- Source SHA256: $EXPECTED_MODEL_SHA256"
+            echo "- Calibration: 12 synthetic pairs at 512 and 1024"
+            echo "- Precision: FP16 AutoCast and FP8+FP16 Q/DQ"
+            echo "- Output artifact retention: 7 days"
+          } >> "$GITHUB_STEP_SUMMARY"
