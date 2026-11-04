@@ -115,8 +115,25 @@ def main() -> int:
             print("ONNX variants:", onnx_files)
             manifest = json.loads(archive.read("manifest.json"))
             print("Success:", manifest["variants_succeeded"], "/", manifest["variants_attempted"])
+            fp8_successes = [
+                row for row in manifest["variants"]
+                if row.get("kind") == "fp8" and row.get("status") == "SUCCESS"
+            ]
+            for row in manifest["variants"]:
+                print(
+                    f"VARIANT {row.get('status')} {row.get('name')} "
+                    f"error={row.get('error', '')}"
+                )
+            for name in archive.namelist():
+                if name.startswith("logs/") and name.endswith(".log"):
+                    log_text = archive.read(name).decode("utf-8", errors="replace")
+                    if "Traceback" in log_text or "Error" in log_text or "ERROR" in log_text:
+                        print(f"--- diagnostic log: {name} ---")
+                        print("\n".join(log_text.splitlines()[-50:]))
             if manifest["variants_succeeded"] < 1:
                 raise RuntimeError("No ModelOpt variant succeeded in CPU smoke test")
+            if not fp8_successes:
+                raise RuntimeError("All FP8 variants failed in CPU smoke test; inspect diagnostics above")
     print("MODELopt CPU end-to-end smoke test: PASS")
     return 0
 
