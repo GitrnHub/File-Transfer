@@ -130,9 +130,16 @@ jobs:
           except ValueError as exc:
               print(f"ERROR: malformed URL: {exc}", file=sys.stderr)
               raise SystemExit(4)
-          if parsed.scheme.lower() != "https" or not parsed.hostname:
-              print("ERROR: a complete HTTPS URL is required", file=sys.stderr)
+          if parsed.scheme.lower() == "blob":
+              print(
+                  "ERROR: this is a browser-local blob: URL, not a downloadable HTTPS link. "
+                  "GitHub Actions cannot access it. Supply a real https:// file URL.",
+                  file=sys.stderr,
+              )
               raise SystemExit(5)
+          if parsed.scheme.lower() != "https" or not parsed.hostname:
+              print("ERROR: a complete HTTPS download URL is required", file=sys.stderr)
+              raise SystemExit(6)
           print(f"URL parsed: host={parsed.hostname}, path_chars={len(parsed.path)}, query_chars={len(parsed.query)}, port={port or 443}", file=sys.stderr)
           print(raw)
           PY
