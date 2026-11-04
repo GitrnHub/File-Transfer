@@ -111,7 +111,8 @@ jobs:
         run: |
           set -euo pipefail
           MODEL_URL="$(python - <<'PY'
-          import json, os
+          import json, os, sys
+          from urllib.parse import urlsplit
           with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               event = json.load(f)
           raw = str((event.get("inputs") or {}).get("model_url", "")).strip()
@@ -120,6 +121,19 @@ jobs:
           if "](" in raw and raw.endswith(")"):
               raw = raw.split("](", 1)[1][:-1]
           raw = raw.strip().strip('"').strip("'").strip("“”‘’<>")
+          if any(ch.isspace() for ch in raw):
+              print("ERROR: URL contains whitespace or a line break", file=sys.stderr)
+              raise SystemExit(3)
+          try:
+              parsed = urlsplit(raw)
+              port = parsed.port
+          except ValueError as exc:
+              print(f"ERROR: malformed URL: {exc}", file=sys.stderr)
+              raise SystemExit(4)
+          if parsed.scheme.lower() != "https" or not parsed.hostname:
+              print("ERROR: a complete HTTPS URL is required", file=sys.stderr)
+              raise SystemExit(5)
+          print(f"URL parsed: host={parsed.hostname}, path_chars={len(parsed.path)}, query_chars={len(parsed.query)}, port={port or 443}", file=sys.stderr)
           print(raw)
           PY
           )"
