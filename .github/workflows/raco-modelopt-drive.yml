@@ -28,9 +28,6 @@ jobs:
       MODEL_ID: "1bQvRw5k9-6um6ByCv7NKHKosmnl2KuVQ"
       EXPECTED_MODEL_SIZE: "50039973"
       EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
-      MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
-      CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
-      OUTPUT_ROOT: ${{ runner.temp }}/raco_modelopt_output
 
     steps:
       - name: Checkout conversion tools
@@ -42,6 +39,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Initialize runner paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "MODEL_PATH=$RUNNER_TEMP/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx" >> "$GITHUB_ENV"
+          echo "CALIBRATION_ROOT=$RUNNER_TEMP/raco_calibration" >> "$GITHUB_ENV"
+          echo "OUTPUT_ROOT=$RUNNER_TEMP/raco_modelopt_output" >> "$GITHUB_ENV"
 
       - name: Download public ONNX from Google Drive
         shell: bash
