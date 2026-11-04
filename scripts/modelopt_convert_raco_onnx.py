@@ -269,7 +269,7 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--max-pairs", type=int, default=24)
     parser.add_argument("--resolutions", default="512,1024")
-    parser.add_argument("--calibration-ep", choices=["cuda:0", "cpu"], default="cuda:0")
+    parser.add_argument("--calibration-ep", choices=["cuda:0", "cpu"], default="cpu")
     parser.add_argument("--color-order", choices=["RGB", "BGR"], default="RGB")
     parser.add_argument("--pixel-divisor", type=float, default=255.0)
     parser.add_argument("--mean", default="")
