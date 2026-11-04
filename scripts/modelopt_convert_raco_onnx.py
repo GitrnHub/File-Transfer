@@ -299,8 +299,8 @@ def main() -> int:
     if len(model_meta["input"]) != 1 or model_meta["input"][0]["name"] != "images":
         raise RuntimeError(f"Expected one ONNX input named 'images'; got {model_meta['input']}")
     pairs = read_pairs(pairs_csv, args.max_pairs)
-    if len(pairs) < 4:
-        raise ValueError("Use at least 4 image pairs for calibration; 12-24 are recommended")
+    if len(pairs) < 3:
+        raise ValueError("Use at least 3 image pairs for calibration (easy, medium and hard)")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = output_root / f"run_{timestamp}"
