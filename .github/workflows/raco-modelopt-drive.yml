@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: raco-modelopt-drive-3pair
+  group: raco-modelopt-drive-512
   cancel-in-progress: true
 
 jobs:
@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      OMP_NUM_THREADS: "4"
-      MKL_NUM_THREADS: "4"
-      OPENBLAS_NUM_THREADS: "4"
-      ORT_NUM_THREADS: "4"
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      ORT_NUM_THREADS: "2"
       MODEL_ID: "1bQvRw5k9-6um6ByCv7NKHKosmnl2KuVQ"
       EXPECTED_MODEL_SIZE: "50039973"
       EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
@@ -110,7 +110,7 @@ jobs:
           python scripts/generate_raco_synthetic_pairs.py \
             --output "$CALIBRATION_ROOT" \
             --pairs 3 \
-            --size 1024 \
+            --size 512 \
             --seed 20261104
 
       - name: Convert FP16 and FP8 mixed-precision variants
@@ -122,7 +122,7 @@ jobs:
             --calibration-root "$CALIBRATION_ROOT" \
             --output-root "$OUTPUT_ROOT" \
             --max-pairs 3 \
-            --resolutions 512,1024 \
+            --resolutions 512 \
             --calibration-ep cpu \
             --color-order RGB \
             --pixel-divisor 255.0
