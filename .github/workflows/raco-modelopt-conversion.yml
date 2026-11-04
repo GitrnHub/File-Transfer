@@ -88,26 +88,25 @@ jobs:
       - name: Run ModelOpt conversion in existing Runner environment
         shell: cmd
         env:
-          MODEL_OPT_CONDA_EXE: \${{ inputs.conda_exe }}
-          MODEL_OPT_CONDA_ENV: \${{ inputs.conda_env }}
-          MODEL_OPT_MODEL_PATH: \${{ inputs.model_path }}
-          MODEL_OPT_CALIBRATION_ROOT: \${{ inputs.calibration_root }}
-          MODEL_OPT_OUTPUT_ROOT: \${{ inputs.output_root }}
-          MODEL_OPT_RESOLUTIONS: \${{ inputs.resolutions }}
-          MODEL_OPT_MAX_PAIRS: \${{ inputs.max_pairs }}
-          MODEL_OPT_CALIBRATION_EP: \${{ inputs.calibration_ep }}
-          MODEL_OPT_COLOR_ORDER: \${{ inputs.color_order }}
-          MODEL_OPT_PIXEL_DIVISOR: \${{ inputs.pixel_divisor }}
-          MODEL_OPT_MEAN: \${{ inputs.mean }}
-          MODEL_OPT_STD: \${{ inputs.std }}
-          MODEL_OPT_INSTALL_IF_MISSING: "false"
+          MODEL_OPT_CONDA_EXE: ${{ inputs.conda_exe }}
+          MODEL_OPT_CONDA_ENV: ${{ inputs.conda_env }}
+          MODEL_OPT_MODEL_PATH: ${{ inputs.model_path }}
+          MODEL_OPT_CALIBRATION_ROOT: ${{ inputs.calibration_root }}
+          MODEL_OPT_OUTPUT_ROOT: ${{ inputs.output_root }}
+          MODEL_OPT_RESOLUTIONS: ${{ inputs.resolutions }}
+          MODEL_OPT_MAX_PAIRS: ${{ inputs.max_pairs }}
+          MODEL_OPT_CALIBRATION_EP: ${{ inputs.calibration_ep }}
+          MODEL_OPT_COLOR_ORDER: ${{ inputs.color_order }}
+          MODEL_OPT_PIXEL_DIVISOR: ${{ inputs.pixel_divisor }}
+          MODEL_OPT_MEAN: ${{ inputs.mean }}
+          MODEL_OPT_STD: ${{ inputs.std }}
         run: scripts\run_modelopt_windows.cmd
 
       - name: Locate generated package
         id: package
         shell: pwsh
         env:
-          OUTPUT_ROOT: \${{ inputs.output_root }}
+          OUTPUT_ROOT: ${{ inputs.output_root }}
         run: |
           $package = Get-ChildItem -LiteralPath $env:OUTPUT_ROOT -Filter "raco_modelopt_variants_*.zip" -File |
             Sort-Object LastWriteTime -Descending |
@@ -118,11 +117,11 @@ jobs:
           "package_size=$($package.Length)" >> $env:GITHUB_OUTPUT
 
       - name: Upload package as Actions artifact
-        if: \${{ inputs.publish_artifact }}
+        if: ${{ inputs.publish_artifact }}
         uses: actions/upload-artifact@v4
         with:
-          name: raco-modelopt-onnx-\${{ github.run_id }}
-          path: \${{ steps.package.outputs.package_path }}
+          name: raco-modelopt-onnx-${{ github.run_id }}
+          path: ${{ steps.package.outputs.package_path }}
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -131,9 +130,9 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          PACKAGE_NAME: \${{ steps.package.outputs.package_name }}
-          PACKAGE_SIZE: \${{ steps.package.outputs.package_size }}
-          PUBLISH_ARTIFACT: \${{ inputs.publish_artifact }}
+          PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
+          PACKAGE_SIZE: ${{ steps.package.outputs.package_size }}
+          PUBLISH_ARTIFACT: ${{ inputs.publish_artifact }}
         run: |
           "## Raco ModelOpt ONNX conversion" >> $env:GITHUB_STEP_SUMMARY
           "- Package: $env:PACKAGE_NAME" >> $env:GITHUB_STEP_SUMMARY
