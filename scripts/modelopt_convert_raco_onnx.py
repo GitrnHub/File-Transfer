@@ -299,8 +299,8 @@ def main() -> int:
     if len(model_meta["input"]) != 1 or model_meta["input"][0]["name"] != "images":
         raise RuntimeError(f"Expected one ONNX input named 'images'; got {model_meta['input']}")
     pairs = read_pairs(pairs_csv, args.max_pairs)
-    if len(pairs) < 3:
-        raise ValueError("Use at least 3 image pairs for calibration (easy, medium and hard)")
+    if len(pairs) < 1:
+        raise ValueError("At least one calibration image pair is required")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = output_root / f"run_{timestamp}"
@@ -442,10 +442,11 @@ def main() -> int:
         "variants_failed": len(failed_rows),
         "variants": manifest_rows,
         "important": [
-            "FP16 AutoCast variants are calibrated with supplied image pairs and keep FP32 model I/O.",
+            "FP16 AutoCast variants are calibrated with one supplied image pair to limit ReferenceRunner intermediate-output memory; model I/O remains FP32.",
             "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, and preserve source opset.",
             "FP8 supported op types selected here: Conv, Gemm, MatMul.",
             "The source ONNX and calibration images are not included in the package.",
+            "Calibration is intentionally limited to one 512x512 pair for this first CPU pass; treat FP8 scales as provisional and validate accuracy before deployment.",
             "Preprocessing must match the original Raco pipeline; defaults are RGB and float32 / 255 with no mean/std.",
         ],
     }
