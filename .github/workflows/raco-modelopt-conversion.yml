@@ -114,7 +114,10 @@ jobs:
           import json, os
           with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               event = json.load(f)
-          print((event.get("inputs") or {}).get("model_url", ""))
+          raw = str((event.get("inputs") or {}).get("model_url", "")).strip()
+          raw = raw.strip('"').strip("'").strip("“”‘’<>")
+          raw = raw.replace(r"\\/", "/").replace(r"\\:", ":")
+          print(raw)
           PY
           )"
           if [[ -z "$MODEL_URL" ]]; then
