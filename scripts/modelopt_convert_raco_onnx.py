@@ -431,7 +431,7 @@ def main() -> int:
         "onnx_version": onnx.__version__,
         "onnxruntime_version": ort.__version__,
         "onnxruntime_providers": ort.get_available_providers(),
-        "gpu": torch.cuda.get_device_name(0),
+        "execution_device": "CPU-only GitHub-hosted runner",
         "calibration_dataset": str(pairs_csv),
         "calibration_pair_count": len(pairs),
         "calibration_resolutions": sizes,
