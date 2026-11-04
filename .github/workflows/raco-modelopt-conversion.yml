@@ -124,6 +124,7 @@ jobs:
         id: convert
         shell: bash
         env:
+          PAIR_COUNT: ${{ inputs.max_pairs }}
           RESOLUTIONS: ${{ inputs.resolutions }}
           COLOR_ORDER: ${{ inputs.color_order }}
           PIXEL_DIVISOR: ${{ inputs.pixel_divisor }}
