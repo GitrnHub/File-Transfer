@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: raco-modelopt-release
@@ -40,10 +40,11 @@ jobs:
           python-version: "3.12"
 
       - name: Download the ONNX Release asset and verify SHA256
+        id: download-source
         shell: bash
         run: |
           set -euo pipefail
-          MODEL_URL="$(python - <<'PY'
+          mapfile -t MODEL_META < <(python - <<'PY'
           import json, os, sys
           with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
               event = json.load(f)
@@ -62,9 +63,13 @@ jobs:
               print("Release asset URL is not a public GitHub HTTPS URL", file=sys.stderr)
               raise SystemExit(4)
           print(url)
+          print(assets[0]["id"])
           PY
-          )"
+          )
+          MODEL_URL="${MODEL_META[0]}"
+          ASSET_ID="${MODEL_META[1]}"
           echo "::add-mask::$MODEL_URL"
+          echo "asset_id=$ASSET_ID" >> "$GITHUB_OUTPUT"
           curl --proto '=https' --tlsv1.2 --fail --location --retry 3 \
             --connect-timeout 30 "$MODEL_URL" --output "$MODEL_PATH"
           unset MODEL_URL
@@ -168,6 +173,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
+
+      - name: Remove temporary public source ONNX Release asset
+        if: always() && steps.download-source.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ID: ${{ steps.download-source.outputs.asset_id }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ASSET_ID" ]]; then
+            echo "No verified source asset ID; nothing to remove."
+            exit 0
+          fi
+          curl --fail --silent --show-error --request DELETE \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID"
+          echo "Temporary source ONNX Release asset deleted."
 
       - name: Write summary
         if: always()
