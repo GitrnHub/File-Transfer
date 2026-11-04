@@ -46,9 +46,6 @@ jobs:
       OPENBLAS_NUM_THREADS: "4"
       ORT_NUM_THREADS: "4"
       EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
-      MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
-      CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
-      OUTPUT_ROOT: ${{ runner.temp }}/raco_modelopt_output
 
     steps:
       - name: Checkout conversion tools
@@ -67,6 +64,7 @@ jobs:
         shell: bash
         env:
           MODEL_URL: ${{ inputs.model_url }}
+          MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
         run: |
           set -euo pipefail
           echo "::add-mask::$MODEL_URL"
@@ -112,6 +110,7 @@ jobs:
         shell: bash
         env:
           PAIR_COUNT: ${{ inputs.max_pairs }}
+          CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
         run: |
           set -euo pipefail
           python scripts/generate_raco_synthetic_pairs.py \
@@ -128,6 +127,9 @@ jobs:
           RESOLUTIONS: ${{ inputs.resolutions }}
           COLOR_ORDER: ${{ inputs.color_order }}
           PIXEL_DIVISOR: ${{ inputs.pixel_divisor }}
+          MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
+          CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
+          OUTPUT_ROOT: ${{ runner.temp }}/raco_modelopt_output
         run: |
           set -euo pipefail
           python scripts/modelopt_convert_raco_onnx.py \
