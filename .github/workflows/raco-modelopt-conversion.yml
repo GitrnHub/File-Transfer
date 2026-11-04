@@ -1,0 +1,184 @@
+name: Raco ModelOpt ONNX Conversion
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: Temporary signed download URL for the ONNX file in ChatGPT Library (masked in logs; not saved in Git)
+        required: true
+        type: string
+      resolutions:
+        description: Calibration resolutions
+        required: true
+        default: "512,1024"
+        type: string
+      max_pairs:
+        description: Number of synthetic calibration pairs
+        required: true
+        default: "12"
+        type: string
+      color_order:
+        description: Input color order used by the Raco pipeline
+        required: true
+        default: "RGB"
+        type: choice
+        options: ["RGB", "BGR"]
+      pixel_divisor:
+        description: Input pixel divisor (255 for [0,1])
+        required: true
+        default: "255.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raco-modelopt-cpu-conversion
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      ORT_NUM_THREADS: "4"
+      EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
+
+    steps:
+      - name: Checkout conversion tools
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Download the exact Library ONNX and verify its SHA256
+        shell: bash
+        env:
+          MODEL_URL: ${{ inputs.model_url }}
+          MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$MODEL_URL"
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 30 \
+            "$MODEL_URL" --output "$MODEL_PATH"
+          ACTUAL_SHA256="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+          echo "Downloaded ONNX size: $(stat -c%s "$MODEL_PATH") bytes"
+          echo "Expected SHA256: $EXPECTED_MODEL_SHA256"
+          echo "Actual SHA256:   $ACTUAL_SHA256"
+          test "$ACTUAL_SHA256" = "$EXPECTED_MODEL_SHA256"
+
+      - name: Install CPU PyTorch and NVIDIA ModelOpt 0.48.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+          python -m pip install "nvidia-modelopt[onnx]==0.48.0" opencv-python-headless
+
+      - name: Verify CPU-only ModelOpt environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import torch
+          import onnx
+          import onnxruntime as ort
+          import modelopt
+          from modelopt.onnx.autocast import convert_to_mixed_precision
+          from modelopt.onnx.quantization import quantize
+          print("Python CPU torch:", torch.__version__)
+          print("CUDA available (expected False):", torch.cuda.is_available())
+          print("ONNX:", onnx.__version__)
+          print("ONNX Runtime:", ort.__version__)
+          print("ORT providers:", ort.get_available_providers())
+          print("ModelOpt import: OK")
+          assert "CPUExecutionProvider" in ort.get_available_providers()
+          assert not torch.cuda.is_available()
+          PY
+          python -m pip check
+
+      - name: Generate representative synthetic calibration pairs
+        shell: bash
+        env:
+          PAIR_COUNT: ${{ inputs.max_pairs }}
+          CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
+        run: |
+          set -euo pipefail
+          python scripts/generate_raco_synthetic_pairs.py \
+            --output "$CALIBRATION_ROOT" \
+            --pairs "$PAIR_COUNT" \
+            --size 1024 \
+            --seed 20261104
+
+      - name: Convert FP16 and FP8 mixed-precision variants
+        id: convert
+        shell: bash
+        env:
+          PAIR_COUNT: ${{ inputs.max_pairs }}
+          RESOLUTIONS: ${{ inputs.resolutions }}
+          COLOR_ORDER: ${{ inputs.color_order }}
+          PIXEL_DIVISOR: ${{ inputs.pixel_divisor }}
+          MODEL_PATH: ${{ runner.temp }}/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx
+          CALIBRATION_ROOT: ${{ runner.temp }}/raco_calibration
+          OUTPUT_ROOT: ${{ runner.temp }}/raco_modelopt_output
+        run: |
+          set -euo pipefail
+          python scripts/modelopt_convert_raco_onnx.py \
+            --model "$MODEL_PATH" \
+            --calibration-root "$CALIBRATION_ROOT" \
+            --output-root "$OUTPUT_ROOT" \
+            --max-pairs "$PAIR_COUNT" \
+            --resolutions "$RESOLUTIONS" \
+            --calibration-ep cpu \
+            --color-order "$COLOR_ORDER" \
+            --pixel-divisor "$PIXEL_DIVISOR"
+
+      - name: Upload conversion package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-onnx-${{ github.run_id }}
+          path: ${{ runner.temp }}/raco_modelopt_output/raco_modelopt_variants_*.zip
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload detailed logs and manifest on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-debug-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/raco_modelopt_output/**
+            ${{ runner.temp }}/raco_calibration/pairs.csv
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Raco ModelOpt CPU conversion"
+            echo ""
+            echo "- Runner: GitHub-hosted Ubuntu CPU"
+            echo "- ModelOpt: 0.48.0"
+            echo "- Model SHA256: $EXPECTED_MODEL_SHA256"
+            echo "- Calibration EP: CPUExecutionProvider"
+            echo "- Resolutions: ${{ inputs.resolutions }}"
+            echo "- Calibration pairs: ${{ inputs.max_pairs }}"
+            echo "- Artifact: raco-modelopt-onnx-${{ github.run_id }}"
+            echo ""
+            echo "The original ONNX and calibration images are not included in the output package."
+            echo "The artifact is downloadable by readers of this public repository for 7 days."
+          } >> "$GITHUB_STEP_SUMMARY"
