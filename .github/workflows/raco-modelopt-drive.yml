@@ -1,6 +1,12 @@
 name: Raco ModelOpt ONNX Conversion (Google Drive source)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/raco-modelopt-drive.yml
+      - scripts/modelopt_convert_raco_onnx.py
+      - scripts/generate_raco_synthetic_pairs.py
   issues:
     types: [opened]
   workflow_dispatch:
@@ -14,7 +20,7 @@ concurrency:
 
 jobs:
   convert:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]')) }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
