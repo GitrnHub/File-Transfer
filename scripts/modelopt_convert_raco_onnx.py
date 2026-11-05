@@ -200,6 +200,50 @@ def inspect_variant(path: Path) -> dict[str, Any]:
     }
 
 
+def make_fp8_ort_compatible_model(source_path: Path, output_path: Path) -> Path:
+    """Normalize ONNX Resize optional inputs to the dtypes required by ONNX Runtime.
+
+    ONNX Resize expects roi/scales tensors to be FLOAT and sizes to be INT64.
+    Some exported Torch graphs contain DOUBLE constants for Resize inputs; TRT
+    may tolerate these while ONNX Runtime rejects the graph during FP8
+    calibration. Insert explicit Cast nodes immediately before each Resize.
+    """
+    model = onnx.load(str(source_path), load_external_data=True)
+    rewritten_nodes = []
+    cast_index = 0
+    cast_specs = (
+        (1, onnx.TensorProto.FLOAT, "roi_fp32"),
+        (2, onnx.TensorProto.FLOAT, "scales_fp32"),
+        (3, onnx.TensorProto.INT64, "sizes_int64"),
+    )
+    for node in model.graph.node:
+        if node.op_type == "Resize":
+            for input_index, target_dtype, suffix in cast_specs:
+                if input_index >= len(node.input) or not node.input[input_index]:
+                    continue
+                original_name = node.input[input_index]
+                cast_output = f"{original_name}__{suffix}_{cast_index}"
+                cast_name = f"modelopt_{suffix}_{cast_index}"
+                rewritten_nodes.append(
+                    onnx.helper.make_node(
+                        "Cast",
+                        inputs=[original_name],
+                        outputs=[cast_output],
+                        to=target_dtype,
+                        name=cast_name,
+                    )
+                )
+                node.input[input_index] = cast_output
+                cast_index += 1
+        rewritten_nodes.append(node)
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    onnx.checker.check_model(model)
+    onnx.save_model(model, str(output_path))
+    return output_path
+
+
 def run_variant(
     name: str,
     kind: str,
@@ -372,6 +416,16 @@ def main() -> int:
 
             run_variant(name, "fp16", output_path, log_path, convert_fp16, manifest_rows)
 
+        # Normalize Resize input dtypes for ONNX Runtime's FP8 calibration path.
+        fp8_model_path = run_dir / "raco_fp8_ort_compatible.onnx"
+        make_fp8_ort_compatible_model(model_path, fp8_model_path)
+        print("FP8 ORT-compatible model:", fp8_model_path)
+        ort_preflight = ort.InferenceSession(
+            str(fp8_model_path), providers=["CPUExecutionProvider"]
+        )
+        print("FP8 ONNX Runtime graph preflight: PASS")
+        del ort_preflight
+
         # FP8 variants are calibrated separately at each input size.
         fp8_configs = [
             ("all_entropy_mha16", "entropy", SUPPORTED_FP8_OPS, "fp16"),
@@ -401,7 +455,7 @@ def main() -> int:
                         str(model_path), {"images": array}, calibration_shapes=shape_spec
                     )
                     modelopt_quantize(
-                        onnx_path=str(model_path),
+                        onnx_path=str(fp8_model_path),
                         quantize_mode="fp8",
                         calibration_method=method_value,
                         calibration_data_reader=reader,
@@ -456,7 +510,7 @@ def main() -> int:
         "variants": manifest_rows,
         "important": [
             "FP16 AutoCast skips ReferenceRunner activation capture (data_max=inf) to avoid the 15-GiB runner OOM; node selection uses initializer-range and explicit op exclusions only. Model I/O remains FP32; validate accuracy against FP32 before deployment.",
-            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, preserve source opset, and calibrate_per_node=True to reduce peak CPU memory.",
+            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, preserve source opset, calibrate_per_node=True, and an FP8-only copy with explicit Resize roi/scales FLOAT and sizes INT64 casts for ONNX Runtime compatibility.",
             "FP8 supported op types selected here: Conv, Gemm, MatMul.",
             "The source ONNX and calibration images are not included in the package.",
             "Calibration is intentionally limited to one 512x512 pair for this first CPU pass; treat FP8 scales as provisional and validate accuracy before deployment.",
