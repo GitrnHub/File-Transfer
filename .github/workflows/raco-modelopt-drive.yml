@@ -2,7 +2,7 @@ name: Raco ModelOpt ONNX Conversion (Google Drive source)
 
 on:
   issues:
-    types: [opened, edited]
+    types: [opened]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   convert:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]') && !contains(github.event.issue.body, 'Dispatch nonce: retry-20261105-02'))
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
