@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   convert:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]'))
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && startsWith(github.event.issue.title, '[run-modelopt]') && !contains(github.event.issue.body, 'Dispatch nonce: retry-20261105-02'))
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
