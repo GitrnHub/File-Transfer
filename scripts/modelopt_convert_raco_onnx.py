@@ -302,14 +302,11 @@ def main() -> int:
     if len(pairs) < 1:
         raise ValueError("At least one calibration image pair is required")
 
-    # ModelOpt AutoCast's ReferenceRunner marks every graph tensor as an output
-    # and retains batch outputs while aggregating statistics. On this large
-    # ALIKED+LightGlue graph, multiple CPU calibration batches can exhaust the
-    # standard 16-GB GitHub-hosted runner. Keep the middle (medium-difficulty)
-    # pair for this first CPU conversion pass.
+    # Keep the medium-difficulty pair first (the workflow orders pairs.csv that way).
+    # The converter must not create multiple simultaneous reference batches.
     requested_pair_count = len(pairs)
     if len(pairs) > 1:
-        pairs = [pairs[len(pairs) // 2]]
+        pairs = [pairs[0]]
     print(
         f"Calibration memory cap: using {len(pairs)} representative pair "
         f"out of {requested_pair_count} available"
@@ -341,31 +338,33 @@ def main() -> int:
     manifest_rows: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="raco_modelopt_calib_") as temp_name:
         temp_dir = Path(temp_name)
-        autocast_calib_dir = temp_dir / "autocast_calibration"
-        write_autocast_calibration_dir(
-            pairs, sizes, autocast_calib_dir, args.color_order, args.pixel_divisor, mean, std
-        )
-
-        # FP16 AutoCast variants: calibrated node classification, all keep FP32 model I/O.
-        fp16_variants = [
-            ("fp16_autocast_balanced", 512.0, None),
-            ("fp16_autocast_conservative", 512.0, SENSITIVE_FP16_OPS),
-            ("fp16_autocast_aggressive", 2048.0, None),
+        # FP16 AutoCast variants: do not run ReferenceRunner on this 10.9k-node
+        # graph. It marks every intermediate tensor as an output and peaks at
+        # ~15.3 GB RSS on the 15-GiB hosted runner, even with one calibration pair.
+        # data_max=inf skips that reference-inference pass. Precision selection
+        # therefore uses initializer-range and explicit operator exclusions only.
+        conservative_exclusions = SENSITIVE_FP16_OPS + [
+            "Exp", "Log", "Sigmoid", "Tanh", "Pow", "Reciprocal", "Gather"
         ]
-        for name, data_max, excluded_ops in fp16_variants:
+        fp16_variants = [
+            ("fp16_autocast_balanced", SENSITIVE_FP16_OPS),
+            ("fp16_autocast_conservative", conservative_exclusions),
+            ("fp16_autocast_aggressive", None),
+        ]
+        for name, excluded_ops in fp16_variants:
             output_path = onnx_dir / f"{name}.onnx"
             log_path = log_dir / f"{name}.log"
 
-            def convert_fp16(out=output_path, dmax=data_max, excluded=excluded_ops):
+            def convert_fp16(out=output_path, excluded=excluded_ops):
                 converted = convert_to_mixed_precision(
                     onnx_path=str(model_path),
                     low_precision_type="fp16",
                     nodes_to_exclude=None,
                     op_types_to_exclude=excluded,
-                    data_max=dmax,
+                    data_max=float("inf"),
                     init_max=65504.0,
                     keep_io_types=True,
-                    calibration_data=str(autocast_calib_dir),
+                    calibration_data=None,
                     providers=[args.calibration_ep],
                     opset=model_meta["opset"],
                 )
@@ -416,6 +415,7 @@ def main() -> int:
                         keep_intermediate_files=False,
                         use_external_data_format=False,
                         output_path=str(out),
+                        calibrate_per_node=True,
                         log_level="INFO",
                         log_file=str(log_path.with_name(log_path.stem + "_quant.log")),
                     )
@@ -455,8 +455,8 @@ def main() -> int:
         "variants_failed": len(failed_rows),
         "variants": manifest_rows,
         "important": [
-            "FP16 AutoCast variants are calibrated with one supplied image pair to limit ReferenceRunner intermediate-output memory; model I/O remains FP32.",
-            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, and preserve source opset.",
+            "FP16 AutoCast skips ReferenceRunner activation capture (data_max=inf) to avoid the 15-GiB runner OOM; node selection uses initializer-range and explicit op exclusions only. Model I/O remains FP32; validate accuracy against FP32 before deployment.",
+            "FP8 variants use explicit Q/DQ nodes, high_precision_dtype=fp16, preserve source opset, and calibrate_per_node=True to reduce peak CPU memory.",
             "FP8 supported op types selected here: Conv, Gemm, MatMul.",
             "The source ONNX and calibration images are not included in the package.",
             "Calibration is intentionally limited to one 512x512 pair for this first CPU pass; treat FP8 scales as provisional and validate accuracy before deployment.",
