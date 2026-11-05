@@ -1,0 +1,163 @@
+name: Raco FP8 Max Calibration Retry
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raco-fp8-max-retry
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    if: github.event.issue && startsWith(github.event.issue.title, '[run-modelopt-max]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      ORT_NUM_THREADS: "1"
+      MALLOC_ARENA_MAX: "1"
+      PYTHONUNBUFFERED: "1"
+      MODEL_ID: "1bQvRw5k9-6um6ByCv7NKHKosmnl2KuVQ"
+      EXPECTED_MODEL_SIZE: "50039973"
+      EXPECTED_MODEL_SHA256: "5ac2e8f7b8de8bfd894dd258add9ba885492f34cc255dfa0eeb5026541171d26"
+
+    steps:
+      - name: Checkout conversion tools
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Initialize runner paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "MODEL_PATH=$RUNNER_TEMP/raco_aliked_lightglue_pipeline_k3072_folded_noshapes.onnx" >> "$GITHUB_ENV"
+          echo "CALIBRATION_ROOT=$RUNNER_TEMP/raco_calibration" >> "$GITHUB_ENV"
+          echo "OUTPUT_ROOT=$RUNNER_TEMP/raco_fp8_max_retry" >> "$GITHUB_ENV"
+
+      - name: Download and verify source ONNX
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://drive.usercontent.google.com/download?id=$MODEL_ID&export=download&confirm=t"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 4 \
+            --connect-timeout 30 --max-time 900 --silent --show-error \
+            "$URL" --output "$MODEL_PATH"
+          test "$(stat -c%s "$MODEL_PATH")" = "$EXPECTED_MODEL_SIZE"
+          ACTUAL="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+          echo "Source SHA256: $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED_MODEL_SHA256"
+
+      - name: Install CPU ModelOpt environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+          python -m pip install "nvidia-modelopt[onnx]==0.48.0" opencv-python-headless
+          python -m pip check
+
+      - name: Generate synthetic calibration pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/generate_raco_synthetic_pairs.py \
+            --output "$CALIBRATION_ROOT" \
+            --pairs 3 \
+            --size 512 \
+            --seed 20261104
+          python - <<'PY'
+          import csv, os
+          p = os.path.join(os.environ["CALIBRATION_ROOT"], "pairs.csv")
+          with open(p, newline="", encoding="utf-8-sig") as f:
+              rows = list(csv.DictReader(f))
+          order = {"medium": 0, "hard": 1, "easy": 2}
+          rows.sort(key=lambda r: order.get(r.get("difficulty", ""), 99))
+          with open(p, "w", newline="", encoding="utf-8-sig") as f:
+              w = csv.DictWriter(f, fieldnames=list(rows[0]))
+              w.writeheader()
+              w.writerows(rows)
+          print("Calibration order:", [r["difficulty"] for r in rows])
+          PY
+
+      - name: Verify CPU runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import torch, onnxruntime as ort
+          from modelopt.onnx.quantization import quantize
+          assert not torch.cuda.is_available()
+          assert "CPUExecutionProvider" in ort.get_available_providers()
+          print("torch:", torch.__version__)
+          print("ORT:", ort.__version__, "providers:", ort.get_available_providers())
+          PY
+
+      - name: Retry FP8 max without per-node calibration
+        id: convert
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_ROOT"
+          python -u scripts/retry_fp8_max.py \
+            --model "$MODEL_PATH" \
+            --calibration-root "$CALIBRATION_ROOT" \
+            --output-root "$OUTPUT_ROOT" &
+          PID=$!
+          while kill -0 "$PID" 2>/dev/null; do
+            RSS="$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ' || true)"
+            echo "[memory] python_rss_kb=$RSS"
+            sleep 5
+          done
+          wait "$PID"
+
+      - name: Package retry logs and output
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          root = Path(os.environ["OUTPUT_ROOT"])
+          root.mkdir(parents=True, exist_ok=True)
+          dest = Path(os.environ["RUNNER_TEMP"]) / "raco_fp8_max_retry.zip"
+          with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+              for p in root.rglob("*"):
+                  if p.is_file():
+                      z.write(p, p.relative_to(root).as_posix())
+          print("Retry package:", dest, dest.stat().st_size)
+          PY
+
+      - name: Upload FP8 max retry package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-fp8-max-retry
+          path: \${{ runner.temp }}/raco_fp8_max_retry.zip
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Write summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Raco FP8 max calibration retry"
+            echo "- Calibration: one 512x512 medium pair"
+            echo "- calibrate_per_node: false"
+            echo "- Source SHA256: $EXPECTED_MODEL_SHA256"
+            echo "- Output artifact: raco-fp8-max-retry"
+          } >> "$GITHUB_STEP_SUMMARY"
