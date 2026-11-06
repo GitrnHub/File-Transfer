@@ -1,0 +1,169 @@
+name: Package Raco ModelOpt Cloud Repro Kit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/package-raco-modelopt-repro-kit.yml
+      - .github/workflows/raco-modelopt-drive.yml
+      - .github/workflows/raco-modelopt-max-retry.yml
+      - scripts/modelopt_convert_raco_onnx.py
+      - scripts/generate_raco_synthetic_pairs.py
+      - scripts/retry_fp8_max.py
+      - docs/raco-modelopt-*.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: raco-modelopt-repro-kit-package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      MAIN_ARTIFACT_ID: "13407118719"
+      MAIN_ARTIFACT_SHA256: "b00c5ea519f05a94169eb4f48cd341a97e5773703ce29a5ba2679aff4d7b27b5"
+      FP8_MAX_ARTIFACT_ID: "13483676226"
+      FP8_MAX_ARTIFACT_SHA256: "a5045d9a20de9ae2b8d45b8471a4fdbac49f79069a9629b9e8e18379dd2db334"
+
+    steps:
+      - name: Checkout runbook, scripts, and workflows
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download verified original conversion artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/raco_repro/raw"
+          curl --fail --silent --show-error --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$MAIN_ARTIFACT_ID/zip" \
+            --output "$RUNNER_TEMP/raco_repro/raw/main-six-artifact.zip"
+          curl --fail --silent --show-error --location \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$FP8_MAX_ARTIFACT_ID/zip" \
+            --output "$RUNNER_TEMP/raco_repro/raw/fp8-max-artifact.zip"
+          MAIN_SHA="$(sha256sum "$RUNNER_TEMP/raco_repro/raw/main-six-artifact.zip" | awk '{print $1}')"
+          FP8_SHA="$(sha256sum "$RUNNER_TEMP/raco_repro/raw/fp8-max-artifact.zip" | awk '{print $1}')"
+          echo "Main artifact SHA256: $MAIN_SHA"
+          echo "Expected main digest: $MAIN_ARTIFACT_SHA256"
+          echo "FP8 Max artifact SHA256: $FP8_SHA"
+          echo "Expected FP8 Max digest: $FP8_MAX_ARTIFACT_SHA256"
+          test "$MAIN_SHA" = "$MAIN_ARTIFACT_SHA256"
+          test "$FP8_SHA" = "$FP8_MAX_ARTIFACT_SHA256"
+
+      - name: Assemble complete seven-variant reproducibility package
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/raco_repro"
+          BUNDLE="$ROOT/Raco_ModelOpt_Cloud_Repro_Kit_2026-11-06"
+          mkdir -p "$BUNDLE/docs" "$BUNDLE/scripts" "$BUNDLE/workflows" \
+            "$BUNDLE/results/main-six/logs" "$BUNDLE/results/fp8-max-retry/logs" \
+            "$BUNDLE/outputs/onnx" "$BUNDLE/provenance"
+
+          unzip -q "$ROOT/raw/main-six-artifact.zip" -d "$ROOT/main-outer"
+          MAIN_INNER="$(find "$ROOT/main-outer" -type f -name 'raco_modelopt_variants_*.zip' -print -quit)"
+          test -n "$MAIN_INNER"
+          unzip -q "$MAIN_INNER" -d "$BUNDLE/results/main-six"
+
+          unzip -q "$ROOT/raw/fp8-max-artifact.zip" -d "$ROOT/fp8-outer"
+          FP8_INNER="$(find "$ROOT/fp8-outer" -type f -name 'raco_fp8_max_retry.zip' -print -quit)"
+          test -n "$FP8_INNER"
+          unzip -q "$FP8_INNER" -d "$BUNDLE/results/fp8-max-retry"
+
+          cp scripts/modelopt_convert_raco_onnx.py "$BUNDLE/scripts/"
+          cp scripts/generate_raco_synthetic_pairs.py "$BUNDLE/scripts/"
+          cp scripts/retry_fp8_max.py "$BUNDLE/scripts/"
+          cp .github/workflows/raco-modelopt-drive.yml "$BUNDLE/workflows/"
+          cp .github/workflows/raco-modelopt-max-retry.yml "$BUNDLE/workflows/"
+          cp docs/raco-modelopt-cloud-runbook.md "$BUNDLE/docs/"
+          cp docs/raco-modelopt-failure-matrix.md "$BUNDLE/docs/"
+          cp docs/raco-modelopt-run-history.md "$BUNDLE/docs/"
+
+          find "$BUNDLE/results/main-six" -type f -name '*.onnx' -exec cp {} "$BUNDLE/outputs/onnx/" \;
+          find "$BUNDLE/results/fp8-max-retry" -type f -name '*.onnx' -exec cp {} "$BUNDLE/outputs/onnx/" \;
+          test "$(find "$BUNDLE/outputs/onnx" -maxdepth 1 -type f -name '*.onnx' | wc -l)" -eq 7
+
+          (
+            cd "$BUNDLE/outputs/onnx"
+            sha256sum *.onnx > SHA256SUMS.txt
+            ls -lh *.onnx > FILE_SIZES.txt
+          )
+
+          cat > "$BUNDLE/README_FIRST.txt" <<'EOF'
+          Raco ModelOpt Cloud Repro Kit
+          Date: 2026-11-06
+          
+          This package contains the complete cloud-only GitHub Actions reproduction
+          materials and the seven successful ONNX outputs.
+          
+          Start here:
+          1. docs/raco-modelopt-cloud-runbook.md
+          2. docs/raco-modelopt-failure-matrix.md
+          3. docs/raco-modelopt-run-history.md
+          
+          Reproduction source:
+          - workflows/: GitHub Actions YAML files
+          - scripts/: ModelOpt conversion and calibration scripts
+          
+          Results:
+          - outputs/onnx/: 3 FP16 + 4 FP8/FP16 ONNX variants
+          - outputs/onnx/SHA256SUMS.txt: output model hashes
+          - results/: per-run manifests, summaries, logs, and retry details
+          
+          Source ONNX is intentionally not included. The runbook records its Drive
+          file ID, byte size, and SHA256. The original ONNX is fetched by the
+          GitHub-hosted workflow and verified before conversion.
+          
+          Accuracy, TensorRT engine compatibility, latency, and GPU memory still
+          require the separate 24-pair Raco benchmark and TensorRT 11.4 validation.
+          EOF
+
+          cat > "$BUNDLE/provenance/ARTIFACTS.txt" <<EOF
+          Main conversion run: https://github.com/$GITHUB_REPOSITORY/actions/runs/42000257687
+          Main artifact ID: $MAIN_ARTIFACT_ID
+          Main artifact API digest: sha256:$MAIN_ARTIFACT_SHA256
+          FP8 Max retry run: https://github.com/$GITHUB_REPOSITORY/actions/runs/42176268060
+          FP8 Max artifact ID: $FP8_MAX_ARTIFACT_ID
+          FP8 Max artifact API digest: sha256:$FP8_MAX_ARTIFACT_SHA256
+          Package commit: $(git rev-parse HEAD)
+          Package created UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+
+          cd "$ROOT"
+          zip -qr -0 "$ROOT/Raco_ModelOpt_Cloud_Repro_Kit_2026-11-06.zip" \
+            "Raco_ModelOpt_Cloud_Repro_Kit_2026-11-06"
+          echo "Package size bytes: $(stat -c%s "$ROOT/Raco_ModelOpt_Cloud_Repro_Kit_2026-11-06.zip")"
+          echo "ONNX output count: $(find "$BUNDLE/outputs/onnx" -maxdepth 1 -name '*.onnx' | wc -l)"
+
+      - name: Upload complete reproducibility package
+        uses: actions/upload-artifact@v4
+        with:
+          name: raco-modelopt-cloud-repro-kit-2026-11-06
+          path: ${{ runner.temp }}/raco_repro/Raco_ModelOpt_Cloud_Repro_Kit_2026-11-06.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Write package summary
+        shell: bash
+        run: |
+          {
+            echo "## Raco ModelOpt Cloud Repro Kit"
+            echo "- Includes 7 successful ONNX variants (3 FP16 + 4 FP8/FP16)"
+            echo "- Includes source scripts, GitHub Actions workflows, runbook, failure matrix, run history, manifests, and logs"
+            echo "- Source ONNX is not bundled; its verified Drive ID, size, and SHA256 are documented"
+            echo "- Artifact retention: 30 days"
+          } >> "$GITHUB_STEP_SUMMARY"
