@@ -295,7 +295,7 @@ def run_variant(
         "name": name,
         "kind": kind,
         "status": "FAILED",
-        "keep_io_types": True,
+        "keep_io_types": kind == "fp16",
         "io_preservation": "direct_io_types=false" if kind == "fp8" else "keep_io_types=true",
         "output": str(output_path.name),
         "log": str(log_path.name),
@@ -452,7 +452,7 @@ def main() -> int:
                     keep_io_types=True,
                     calibration_data=str(autocast_dir),
                     providers=["cpu"],
-                    opset=source_meta["opset"],
+                    opset=max(19, source_meta["opset"]),
                 )
             except Exception as exc:
                 print(
@@ -470,7 +470,7 @@ def main() -> int:
                     keep_io_types=True,
                     calibration_data=None,
                     providers=["cpu"],
-                    opset=source_meta["opset"],
+                    opset=max(19, source_meta["opset"]),
                 )
             onnx.save(converted, str(out))
 
