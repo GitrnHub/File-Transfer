@@ -145,7 +145,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: raco-fp8-max-retry
-          path: \${{ runner.temp }}/raco_fp8_max_retry.zip
+          path: ${{ runner.temp }}/raco_fp8_max_retry.zip
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
