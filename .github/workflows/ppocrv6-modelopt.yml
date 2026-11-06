@@ -1,0 +1,192 @@
+name: PP-OCRv6 rec_small ModelOpt Conversion
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ppocrv6-modelopt.yml
+      - scripts/modelopt_convert_ppocrv6_rec_small.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ppocrv6-rec-small-modelopt
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      ORT_NUM_THREADS: "2"
+      MALLOC_ARENA_MAX: "1"
+      PYTHONUNBUFFERED: "1"
+      EXPECTED_MODEL_SIZE: "21234383"
+      EXPECTED_MODEL_SHA256: "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+
+    steps:
+      - name: Checkout conversion script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install font for multilingual synthetic OCR calibration
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          fc-match "Noto Sans CJK SC" | head -n 1
+
+      - name: Install RapidOCR 3.10.0 model bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "rapidocr==3.10.0"
+          MODEL_PATH="$(python - <<'PY'
+          from pathlib import Path
+          import rapidocr
+          path = Path(rapidocr.__file__).resolve().parent / "models" / "PP-OCRv6_rec_small.onnx"
+          print(path)
+          PY
+          )"
+          if [[ ! -f "$MODEL_PATH" ]]; then
+            echo "::error::PP-OCRv6_rec_small.onnx was not found in the RapidOCR 3.10.0 wheel."
+            exit 2
+          fi
+          echo "MODEL_PATH=$MODEL_PATH" >> "$GITHUB_ENV"
+          ACTUAL_SIZE="$(stat -c%s "$MODEL_PATH")"
+          ACTUAL_SHA256="$(sha256sum "$MODEL_PATH" | awk '{print $1}')"
+          echo "Model path: $MODEL_PATH"
+          echo "Model size: $ACTUAL_SIZE bytes"
+          echo "Expected size: $EXPECTED_MODEL_SIZE bytes"
+          echo "Model SHA256: $ACTUAL_SHA256"
+          echo "Expected SHA256: $EXPECTED_MODEL_SHA256"
+          test "$ACTUAL_SIZE" = "$EXPECTED_MODEL_SIZE"
+          test "$ACTUAL_SHA256" = "$EXPECTED_MODEL_SHA256"
+
+      - name: Install CPU PyTorch and NVIDIA ModelOpt 0.48.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0"
+          python -m pip install "nvidia-modelopt[onnx]==0.48.0"
+          python -m pip check
+
+      - name: Verify ONNX and ModelOpt CPU environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import importlib.metadata
+          import torch
+          import onnx
+          import onnxruntime as ort
+          from modelopt.onnx.autocast import convert_to_mixed_precision
+          from modelopt.onnx.quantization import quantize
+          print("RapidOCR:", importlib.metadata.version("rapidocr"))
+          print("ModelOpt:", importlib.metadata.version("nvidia-modelopt"))
+          print("PyTorch:", torch.__version__, "CUDA available:", torch.cuda.is_available())
+          print("ONNX:", onnx.__version__)
+          print("ONNX Runtime:", ort.__version__, "providers:", ort.get_available_providers())
+          assert not torch.cuda.is_available()
+          assert "CPUExecutionProvider" in ort.get_available_providers()
+          print("ModelOpt CPU imports: PASS")
+          PY
+          python -m py_compile scripts/modelopt_convert_ppocrv6_rec_small.py
+
+      - name: Initialize output directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "OUTPUT_ROOT=$RUNNER_TEMP/ppocrv6_modelopt_output" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/ppocrv6_modelopt_output"
+
+      - name: Convert PP-OCRv6 rec_small with ModelOpt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u scripts/modelopt_convert_ppocrv6_rec_small.py \
+            --model "$MODEL_PATH" \
+            --output-root "$OUTPUT_ROOT" \
+            --calibration-count 8 \
+            --calibration-width 320 \
+            --seed 20261106 &
+          CONVERT_PID=$!
+          while kill -0 "$CONVERT_PID" 2>/dev/null; do
+            CURRENT="$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo unavailable)"
+            MAXIMUM="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unavailable)"
+            RSS="$(ps -o rss= -p "$CONVERT_PID" 2>/dev/null | tr -d ' ' || true)"
+            echo "[memory] cgroup_current_bytes=$CURRENT cgroup_max_bytes=$MAXIMUM python_rss_kb=${RSS:-unavailable}"
+            sleep 5
+          done
+          wait "$CONVERT_PID"
+
+      - name: Verify package and preserve partial successes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import glob, json, os, pathlib, zipfile
+          root = pathlib.Path(os.environ["OUTPUT_ROOT"])
+          packages = sorted(root.glob("ppocrv6_rec_small_modelopt_*.zip"))
+          if not packages:
+              raise SystemExit("No PP-OCRv6 ModelOpt output package was produced")
+          with zipfile.ZipFile(packages[-1]) as archive:
+              manifest = json.loads(archive.read("manifest.json"))
+          print("FP16 successes:", manifest["fp16_succeeded"])
+          print("FP8 successes:", manifest["fp8_succeeded"])
+          for row in manifest["variants"]:
+              print(row["status"], row["name"], row.get("error", ""))
+          if manifest["fp16_succeeded"] < 1:
+              raise SystemExit("No FP16 output succeeded")
+          PY
+
+      - name: Upload ModelOpt ONNX package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppocrv6-rec-small-modelopt-${{ github.run_id }}
+          path: ${{ runner.temp }}/ppocrv6_modelopt_output/ppocrv6_rec_small_modelopt_*.zip
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload diagnostic logs if conversion fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppocrv6-rec-small-debug-${{ github.run_id }}
+          path: ${{ runner.temp }}/ppocrv6_modelopt_output/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## PP-OCRv6 rec_small ModelOpt conversion"
+            echo "- Runner: GitHub-hosted Ubuntu CPU"
+            echo "- RapidOCR: 3.10.0"
+            echo "- ModelOpt: 0.48.0"
+            echo "- Source SHA256: $EXPECTED_MODEL_SHA256"
+            echo "- Source size: $EXPECTED_MODEL_SIZE bytes"
+            echo "- Calibration: 8 synthetic OCR text-line crops at 3x48x320"
+            echo "- FP16 requirement: keep_io_types=True"
+            echo "- FP8 I/O policy: direct_io_types=False"
+            echo "- Artifact retention: 30 days"
+          } >> "$GITHUB_STEP_SUMMARY"
