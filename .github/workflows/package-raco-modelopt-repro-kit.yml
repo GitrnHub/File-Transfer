@@ -93,15 +93,17 @@ jobs:
           cp docs/raco-modelopt-run-history.md "$BUNDLE/docs/"
 
           MAIN_ONNX_COUNT="$(find "$BUNDLE/results/main-six" -type f -name '*.onnx' | wc -l)"
-          FP8_ONNX_COUNT="$(find "$BUNDLE/results/fp8-max-retry" -type f -name '*.onnx' | wc -l)"
+          FP8_MAX_COUNT="$(find "$BUNDLE/results/fp8-max-retry" -type f -name 'fp8_fp16_all_max_mha16_512.onnx' | wc -l)"
+          FP8_RETRY_ALL_COUNT="$(find "$BUNDLE/results/fp8-max-retry" -type f -name '*.onnx' | wc -l)"
           echo "Main archive ONNX count: $MAIN_ONNX_COUNT"
-          echo "FP8 Max retry ONNX count: $FP8_ONNX_COUNT"
+          echo "FP8 Max retry ONNX files (including helper): $FP8_RETRY_ALL_COUNT"
+          echo "FP8 Max final output count: $FP8_MAX_COUNT"
           find "$BUNDLE/results/main-six" -type f -name '*.onnx' -exec cp -t "$BUNDLE/outputs/onnx/" {} +
-          find "$BUNDLE/results/fp8-max-retry" -type f -name '*.onnx' -exec cp -t "$BUNDLE/outputs/onnx/" {} +
+          find "$BUNDLE/results/fp8-max-retry" -type f -name 'fp8_fp16_all_max_mha16_512.onnx' -exec cp -t "$BUNDLE/outputs/onnx/" {} +
           TOTAL_ONNX_COUNT="$(find "$BUNDLE/outputs/onnx" -maxdepth 1 -type f -name '*.onnx' | wc -l)"
           echo "Combined ONNX count: $TOTAL_ONNX_COUNT"
           test "$MAIN_ONNX_COUNT" -eq 6
-          test "$FP8_ONNX_COUNT" -eq 1
+          test "$FP8_MAX_COUNT" -eq 1
           test "$TOTAL_ONNX_COUNT" -eq 7
 
           (
